@@ -17,6 +17,10 @@ Store reusable font files and generated font sources in `fonts/`.
 - Check Flash and internal-RAM impact before adding a font; the ESP32-C3 has no PSRAM.
 - Do not commit fonts whose license does not permit redistribution.
 
+| File | Size and format | Use and source |
+| --- | --- | --- |
+| [`fonts/smoking_font_18.c`](fonts/smoking_font_18.c) | 18 px LVGL bitmap font source, 4 bpp, uncompressed | Chinese UI subset for the fork-specific tools application in `main/`. Generated from Noto Sans CJK SC Regular, distributed by Google/Adobe under the SIL Open Font License 1.1. Montserrat is configured in the application as the fallback for digits, Latin text, and LVGL symbols. Conversion used `lv_font_conv` 1.5.3 with the fixed Chinese labels used by the application, output symbol `smoking_font_18`. |
+
 ## Images
 
 Store reusable source images and generated display assets in `images/`.

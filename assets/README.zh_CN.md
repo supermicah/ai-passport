@@ -15,6 +15,10 @@
 - 添加字库前评估 Flash 与内部 RAM 影响；ESP32-C3 无 PSRAM。
 - 不提交许可不允许分发的字库。
 
+| 文件 | 尺寸与格式 | 用途与来源 |
+| --- | --- | --- |
+| [`fonts/smoking_font_18.c`](fonts/smoking_font_18.c) | 18 px LVGL 位图字库源码，4 bpp，未压缩 | `main/` 中 fork 专用“小工具”应用的中文 UI 子集。来源为 Noto Sans CJK SC Regular，由 Google/Adobe 以 SIL Open Font License 1.1 发布。应用中配置 Montserrat 20 作为数字、拉丁字符和 LVGL 符号的 fallback。生成使用 `lv_font_conv` 1.5.3，字符范围为应用固定中文标签字符，输出符号为 `smoking_font_18`。 |
+
 ## 图片（images）
 
 可复用的源图与生成的显示资产放在 `images/`。
