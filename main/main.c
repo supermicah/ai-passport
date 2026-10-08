@@ -152,6 +152,14 @@ static lv_obj_t *label(lv_obj_t *parent, const char *text, int x, int y,
     return obj;
 }
 
+static lv_obj_t *label_one_line(lv_obj_t *parent, const char *text, int x, int y,
+                                int w, uint32_t color)
+{
+    lv_obj_t *obj = label(parent, text, x, y, w, color);
+    lv_label_set_long_mode(obj, LV_LABEL_LONG_MODE_CLIP);
+    return obj;
+}
+
 static lv_obj_t *panel(lv_obj_t *parent, int x, int y, int w, int h,
                        uint32_t color, uint32_t border)
 {
@@ -263,14 +271,23 @@ static void render_home(lv_obj_t *root, uint32_t now)
     label(root, line, 14, 82, 212, wifi.time_synced ? 0x166534 : 0xB45309);
 
     smoking_totals_t today = smoking_model_today(&s_model, today_day());
-    panel(root, 14, 106, 212, 58, 0xFFFFFF, 0xCBD5E1);
+    panel(root, 14, 102, 212, 70, 0xFFFFFF, 0xCBD5E1);
     snprintf(line, sizeof(line), "今日 %lu/%u 根",
              (unsigned long)today.cigarettes, smoking_model_daily_goal(&s_model));
-    label(root, line, 26, 116, 188, 0x111827);
-    snprintf(line, sizeof(line), "低于目标 %u天  最好 %u天",
+    label_one_line(root, line, 26, 110, 188, 0x111827);
+    snprintf(line, sizeof(line), "目标%u天  最好%u天",
              smoking_model_goal_streak(&s_model, today_day()),
              smoking_model_goal_best_streak(&s_model, today_day()));
-    label(root, line, 26, 140, 188, 0x475569);
+    label_one_line(root, line, 26, 132, 188, 0x475569);
+    uint32_t interval = smoking_model_last_interval_sec(&s_model, model_time_sec(now));
+    if (interval) {
+        char dur[24];
+        format_duration(interval, dur, sizeof(dur));
+        snprintf(line, sizeof(line), "上次间隔 %s", dur);
+    } else {
+        snprintf(line, sizeof(line), "上次还没有记录");
+    }
+    label_one_line(root, line, 26, 154, 188, 0x475569);
 
     smoking_feature_t selected = smoking_model_selected_feature(&s_model);
     for (int i = 0; i < (int)SMOKING_FEATURE_COUNT; i++) {
@@ -290,8 +307,9 @@ static void render_home(lv_obj_t *root, uint32_t now)
         format_duration(remaining, dur, sizeof(dur));
         snprintf(line, sizeof(line), "%s %s",
                  smoking_model_focus_mode_name(&s_model), dur);
-        label(root, line, 14, 282, 132, 0x475569);
-        label(root, "OK 进入", 156, 282, 70, 0x475569);
+        label_one_line(root, line, 14, 282, 120, 0x475569);
+        lv_obj_t *hint = label_one_line(root, "OK 进入", 132, 282, 94, 0x475569);
+        lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_RIGHT, 0);
     } else if (selected == SMOKING_FEATURE_SETTINGS) {
         label(root, "OK 进入设置", 14, 282, 212, 0x475569);
     } else {
