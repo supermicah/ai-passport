@@ -443,6 +443,57 @@ void tools_wifi_stop_provisioning(void)
     set_state_for_idle();
 }
 
+esp_err_t tools_wifi_stop_all(void)
+{
+    tools_wifi_stop_provisioning();
+
+    if (s_sntp_started) {
+        esp_sntp_stop();
+        s_sntp_started = false;
+    }
+    if (s_wifi_started) {
+        (void)esp_wifi_scan_stop();
+        (void)esp_wifi_disconnect();
+        esp_err_t err = esp_wifi_stop();
+        if (err != ESP_OK && err != ESP_ERR_WIFI_NOT_INIT) {
+            ESP_LOGW(TAG, "Wi-Fi stop failed: %s", esp_err_to_name(err));
+        }
+        s_wifi_started = false;
+    }
+    if (s_wifi_handler_registered) {
+        esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                              s_wifi_handler);
+        s_wifi_handler_registered = false;
+    }
+    if (s_ip_handler_registered) {
+        esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                              s_ip_handler);
+        s_ip_handler_registered = false;
+    }
+    if (s_wifi_initialized) {
+        esp_err_t err = esp_wifi_deinit();
+        if (err != ESP_OK && err != ESP_ERR_WIFI_NOT_INIT) {
+            ESP_LOGW(TAG, "Wi-Fi deinit failed: %s", esp_err_to_name(err));
+        }
+        s_wifi_initialized = false;
+    }
+    if (s_sta_netif) {
+        esp_netif_destroy_default_wifi(s_sta_netif);
+        s_sta_netif = NULL;
+    }
+
+    s_wifi_connecting = false;
+    s_wifi_got_ip = false;
+    s_ble_connected = false;
+    s_reconnect_after_disconnect = false;
+    s_time_synced = false;
+    s_time_sync_pending = false;
+    s_ip[0] = '\0';
+    s_state = TOOLS_WIFI_OFF;
+    s_error = ESP_OK;
+    return ESP_OK;
+}
+
 esp_err_t tools_wifi_reconnect(void)
 {
     esp_err_t err = tools_wifi_init();

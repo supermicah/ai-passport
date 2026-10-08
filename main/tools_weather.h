@@ -16,5 +16,6 @@ typedef struct {
 } tools_weather_status_t;
 
 esp_err_t tools_weather_init(void);
+esp_err_t tools_weather_stop(void);
 tools_weather_status_t tools_weather_status(void);
 void tools_weather_request_refresh(void);

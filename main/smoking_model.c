@@ -335,6 +335,7 @@ bool smoking_model_idle_backlight_allowed(const smoking_model_t *model)
 {
     switch ((smoking_screen_t)model->persisted.screen) {
     case SMOKING_SCREEN_HOME:
+    case SMOKING_SCREEN_ACTIVE:
     case SMOKING_SCREEN_COUNT_SELECT:
     case SMOKING_SCREEN_SETTINGS:
     case SMOKING_SCREEN_FOCUS:

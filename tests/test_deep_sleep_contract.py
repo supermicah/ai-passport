@@ -53,6 +53,8 @@ class DeepSleepContractTest(unittest.TestCase):
         cls.battery = read("components/bsp/src/bsp_battery.c")
         cls.display = read("components/bsp/src/bsp_display.c")
         cls.i2c = read("components/bsp/src/bsp_i2c.c")
+        cls.button = read("components/bsp/src/bsp_button.c")
+        cls.main = read("main/main.c")
         cls.demo = read("main/demo_low_power.c")
 
     def test_es8311_force_sleep_sequence_is_complete_and_ordered(self) -> None:
@@ -118,6 +120,14 @@ class DeepSleepContractTest(unittest.TestCase):
         self.assertIn("GPIO_PULLUP_DISABLE", body)
         self.assertIn("GPIO_PULLDOWN_DISABLE", body)
 
+    def test_button_adc_is_released_before_gpio_wakeup(self) -> None:
+        body = function_body(self.button, "bsp_button_prepare_deep_sleep")
+        self.assertIn("button_cleanup()", body)
+        self.assertIn("BSP_BTN_GPIO", body)
+        self.assertIn("GPIO_MODE_INPUT", body)
+        self.assertIn("GPIO_PULLUP_ENABLE", body)
+        self.assertIn("gpio_get_level(BSP_BTN_GPIO)", body)
+
     def test_lcd_safe_levels_and_holds_are_configured(self) -> None:
         pins = initializer(self.display, "s_deep_sleep_pins")
         levels = initializer(self.display, "s_deep_sleep_levels")
@@ -152,6 +162,28 @@ class DeepSleepContractTest(unittest.TestCase):
         self.assertEqual(positions, sorted(positions))
         self.assertLess(body.index("bsp_lvgl_lock(1000)"),
                         body.index("bsp_display_prepare_deep_sleep()"))
+
+    def test_tools_app_idle_deep_sleep_uses_button_gpio_wakeup(self) -> None:
+        body = function_body(self.main, "enter_idle_deep_sleep")
+        calls = [
+            "queue_save_if_dirty()",
+            "save_clock_if_due(true)",
+            "bsp_button_prepare_deep_sleep(&button_level)",
+            "esp_deep_sleep_enable_gpio_wakeup",
+            "tools_weather_stop()",
+            "tools_wifi_stop_all()",
+            "bsp_battery_sleep()",
+            "bsp_audio_sleep()",
+            "bsp_audio_prepare_deep_sleep()",
+            "bsp_i2c_prepare_deep_sleep()",
+            "bsp_display_prepare_deep_sleep()",
+            "esp_deep_sleep_start()",
+        ]
+        positions = [body.index(call) for call in calls]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn("1ULL << BSP_BTN_GPIO", body)
+        self.assertIn("ESP_GPIO_WAKEUP_GPIO_LOW", body)
+        self.assertIn("button_level == 0", body)
 
 
 if __name__ == "__main__":

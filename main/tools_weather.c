@@ -4,6 +4,7 @@
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "tools_wifi.h"
 
@@ -17,8 +18,12 @@ static const char *TAG = "tools_weather";
 #define WEATHER_URL "http://wttr.in/Hangzhou?format=%t"
 #define WEATHER_REFRESH_SEC (30u * 60u)
 #define WEATHER_RETRY_SEC (5u * 60u)
+#define WEATHER_STOP_TIMEOUT_MS 7000u
+#define WEATHER_NOTIFY_REFRESH 0x01u
+#define WEATHER_NOTIFY_STOP 0x02u
 
 static TaskHandle_t s_weather_task;
+static SemaphoreHandle_t s_weather_stopped;
 static volatile bool s_refresh_requested = true;
 static tools_weather_status_t s_status = {
     .valid = false,
@@ -98,6 +103,12 @@ static void weather_task(void *arg)
     (void)arg;
     uint32_t last_attempt = 0;
     for (;;) {
+        uint32_t notify = 0;
+        if (xTaskNotifyWait(0, UINT32_MAX, &notify,
+                            pdMS_TO_TICKS(10000)) == pdTRUE) {
+            if (notify & WEATHER_NOTIFY_STOP) break;
+            if (notify & WEATHER_NOTIFY_REFRESH) s_refresh_requested = true;
+        }
         uint32_t now = weather_now_sec();
         uint32_t retry = s_status.valid ? WEATHER_REFRESH_SEC : WEATHER_RETRY_SEC;
         bool due = s_refresh_requested || last_attempt == 0 ||
@@ -120,17 +131,47 @@ static void weather_task(void *arg)
             }
             s_status.updating = false;
         }
-        vTaskDelay(pdMS_TO_TICKS(10000));
     }
+
+    s_status.updating = false;
+    s_weather_task = NULL;
+    if (s_weather_stopped) xSemaphoreGive(s_weather_stopped);
+    vTaskDelete(NULL);
 }
 
 esp_err_t tools_weather_init(void)
 {
     if (s_weather_task) return ESP_OK;
+    if (s_weather_stopped) {
+        vSemaphoreDelete(s_weather_stopped);
+        s_weather_stopped = NULL;
+    }
+    s_weather_stopped = xSemaphoreCreateBinary();
+    if (!s_weather_stopped) return ESP_ERR_NO_MEM;
+    s_refresh_requested = true;
     if (xTaskCreate(weather_task, "tools_weather", 4096, NULL, 3,
                     &s_weather_task) != pdPASS) {
+        vSemaphoreDelete(s_weather_stopped);
+        s_weather_stopped = NULL;
         return ESP_ERR_NO_MEM;
     }
+    return ESP_OK;
+}
+
+esp_err_t tools_weather_stop(void)
+{
+    TaskHandle_t task = s_weather_task;
+    if (!task) return ESP_OK;
+
+    xTaskNotify(task, WEATHER_NOTIFY_STOP, eSetBits);
+    if (!s_weather_stopped ||
+        xSemaphoreTake(s_weather_stopped,
+                       pdMS_TO_TICKS(WEATHER_STOP_TIMEOUT_MS)) != pdTRUE) {
+        ESP_LOGW(TAG, "weather task stop timed out");
+        return ESP_ERR_TIMEOUT;
+    }
+    vSemaphoreDelete(s_weather_stopped);
+    s_weather_stopped = NULL;
     return ESP_OK;
 }
 
@@ -142,4 +183,7 @@ tools_weather_status_t tools_weather_status(void)
 void tools_weather_request_refresh(void)
 {
     s_refresh_requested = true;
+    if (s_weather_task) {
+        xTaskNotify(s_weather_task, WEATHER_NOTIFY_REFRESH, eSetBits);
+    }
 }

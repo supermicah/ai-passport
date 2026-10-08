@@ -30,6 +30,7 @@ typedef struct {
 esp_err_t tools_wifi_init(void);
 esp_err_t tools_wifi_start_provisioning(void);
 void tools_wifi_stop_provisioning(void);
+esp_err_t tools_wifi_stop_all(void);
 esp_err_t tools_wifi_reconnect(void);
 esp_err_t tools_wifi_clear_credentials(void);
 tools_wifi_status_t tools_wifi_status(void);

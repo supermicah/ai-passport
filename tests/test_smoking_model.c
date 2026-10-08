@@ -129,7 +129,7 @@ static void test_idle_policy_and_feature_cycle(void)
 
     assert(smoking_model_idle_backlight_allowed(&model));
     smoking_model_start(&model, 1);
-    assert(!smoking_model_idle_backlight_allowed(&model));
+    assert(smoking_model_idle_backlight_allowed(&model));
     smoking_model_finish(&model, 2);
     assert(smoking_model_idle_backlight_allowed(&model));
 

@@ -3,6 +3,7 @@
 #include "bsp_button.h"
 #include "bsp_pins.h"
 #include "iot_button.h"
+#include "driver/gpio.h"
 #include "esp_adc/adc_oneshot.h"
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
@@ -214,4 +215,23 @@ int bsp_button_read_mv(void) {
     if (adc_oneshot_read(s_adc, BSP_BTN_ADC_CHANNEL, &raw) != ESP_OK) return -1;
     if (adc_cali_raw_to_voltage(s_cali, raw, &mv) != ESP_OK) return -1;
     return mv;
+}
+
+esp_err_t bsp_button_prepare_deep_sleep(int *level_out)
+{
+    button_cleanup();
+
+    const gpio_config_t config = {
+        .pin_bit_mask = 1ULL << BSP_BTN_GPIO,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    esp_err_t err = gpio_config(&config);
+    if (err != ESP_OK) return err;
+
+    if (level_out) *level_out = gpio_get_level(BSP_BTN_GPIO);
+    ESP_LOGI(TAG, "按键已切换为 deep-sleep GPIO%d 唤醒输入", BSP_BTN_GPIO);
+    return ESP_OK;
 }

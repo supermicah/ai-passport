@@ -12,6 +12,8 @@
 
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_sleep.h"
+#include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
@@ -32,11 +34,14 @@ static const char *TAG = "tools_app";
 #define INPUT_QUEUE_DEPTH 8
 #define AUDIO_QUEUE_DEPTH 4
 #define IDLE_BACKLIGHT_SEC 60u
+#define IDLE_DEEP_SLEEP_SEC 180u
+#define IDLE_SLEEP_TIMER_WAKE_SEC (60u * 60u)
 #define UI_REFRESH_MS 250
 #define AUDIO_HZ 16000u
 #define BEEP_SAMPLES 960u
 #define CLOCK_SAVE_INTERVAL_SEC 60u
 #define LOCAL_TIME_OFFSET_SEC (8u * 3600u)
+#define DEEP_SLEEP_MAGIC 0x544F4F4Cu
 
 typedef struct {
     bsp_btn_t btn;
@@ -56,6 +61,7 @@ static bool s_input_ready;
 static bool s_battery_ok;
 static bool s_audio_ok;
 static bool s_backlight_on = true;
+static bool s_entering_deep_sleep;
 static bool s_clock_persistence_enabled;
 static uint32_t s_last_input_sec;
 static uint32_t s_last_clock_save_sec;
@@ -64,6 +70,10 @@ static lv_font_t s_cjk_font;
 static bool s_count_wait_ok_release;
 static bool s_ignore_wake_tail;
 static int16_t s_beep_samples[BEEP_SAMPLES];
+static RTC_DATA_ATTR uint32_t s_deep_sleep_magic;
+static RTC_DATA_ATTR uint32_t s_deep_sleep_count;
+
+static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user);
 
 static uint32_t now_sec(void)
 {
@@ -537,6 +547,92 @@ static void clear_wifi_credentials(void)
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "清除 Wi-Fi 凭据失败: %s", esp_err_to_name(err));
     }
+    (void)tools_wifi_stop_all();
+}
+
+static void log_deep_sleep_warning(const char *step, esp_err_t err)
+{
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "deep sleep 继续：%s 失败: %s", step, esp_err_to_name(err));
+    }
+}
+
+static bool deep_sleep_allowed(void)
+{
+    if (s_entering_deep_sleep) return false;
+    if (s_model.persisted.screen == SMOKING_SCREEN_ACTIVE) return false;
+    if (s_model.focus_running) return false;
+    tools_wifi_status_t wifi = tools_wifi_status();
+    return !wifi.provisioning;
+}
+
+static void restore_button_after_sleep_abort(void)
+{
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+    s_input_ready = false;
+    esp_err_t err = bsp_button_init(on_key, NULL);
+    if (err == ESP_OK) {
+        s_input_ready = true;
+    } else {
+        ESP_LOGE(TAG, "恢复按键失败: %s", esp_err_to_name(err));
+    }
+    s_entering_deep_sleep = false;
+    s_last_input_sec = now_sec();
+}
+
+static void enter_idle_deep_sleep(void)
+{
+    if (!deep_sleep_allowed()) return;
+    s_entering_deep_sleep = true;
+    ESP_LOGI(TAG, "空闲 %u 秒，进入 deep sleep", IDLE_DEEP_SLEEP_SEC);
+
+    queue_save_if_dirty();
+    save_clock_if_due(true);
+
+    int button_level = 1;
+    esp_err_t err = bsp_button_prepare_deep_sleep(&button_level);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "按键 deep-sleep 唤醒准备失败: %s", esp_err_to_name(err));
+        restore_button_after_sleep_abort();
+        return;
+    }
+    if (button_level == 0) {
+        ESP_LOGI(TAG, "按键仍按下，延后 deep sleep");
+        restore_button_after_sleep_abort();
+        return;
+    }
+
+    err = esp_deep_sleep_enable_gpio_wakeup(1ULL << BSP_BTN_GPIO,
+                                           ESP_GPIO_WAKEUP_GPIO_LOW);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "GPIO 唤醒配置失败: %s", esp_err_to_name(err));
+        restore_button_after_sleep_abort();
+        return;
+    }
+    err = esp_sleep_enable_timer_wakeup((uint64_t)IDLE_SLEEP_TIMER_WAKE_SEC * 1000000ULL);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "RTC 定时兜底唤醒配置失败: %s", esp_err_to_name(err));
+    }
+
+    log_deep_sleep_warning("weather stop", tools_weather_stop());
+    log_deep_sleep_warning("Wi-Fi stop", tools_wifi_stop_all());
+
+    log_deep_sleep_warning("CW2017 suspend", bsp_battery_sleep());
+    log_deep_sleep_warning("ES8311 suspend", bsp_audio_sleep());
+    log_deep_sleep_warning("I2S pin release", bsp_audio_prepare_deep_sleep());
+    log_deep_sleep_warning("shared I2C pin release", bsp_i2c_prepare_deep_sleep());
+
+    if (!bsp_lvgl_lock(1000)) {
+        ESP_LOGE(TAG, "deep sleep 前无法停止 LVGL 刷屏，重启恢复外设");
+        esp_restart();
+    }
+    log_deep_sleep_warning("ST7789 suspend", bsp_display_prepare_deep_sleep());
+    if (s_deep_sleep_magic != DEEP_SLEEP_MAGIC) s_deep_sleep_count = 0;
+    s_deep_sleep_magic = DEEP_SLEEP_MAGIC;
+    s_deep_sleep_count++;
+    esp_deep_sleep_start();
+    ESP_LOGE(TAG, "esp_deep_sleep_start 意外返回，重启恢复外设");
+    esp_restart();
 }
 
 static bool count_select_ready_for_input(const input_event_t *input)
@@ -665,11 +761,16 @@ static void input_task(void *arg)
             bsp_display_backlight(0);
             s_backlight_on = false;
         }
+        if (deep_sleep_allowed() && now - s_last_input_sec >= IDLE_DEEP_SLEEP_SEC) {
+            enter_idle_deep_sleep();
+        }
         TickType_t tick_now = xTaskGetTickCount();
         if (tick_now - last_refresh >= pdMS_TO_TICKS(1000)) {
             if (tools_wifi_take_time_synced()) {
                 save_clock_if_due(true);
-                tools_weather_request_refresh();
+                if (tools_weather_init() == ESP_OK) {
+                    tools_weather_request_refresh();
+                }
             }
             if (smoking_model_focus_tick(&s_model, now)) {
                 beep(AUDIO_BEEP_DONE);
@@ -722,6 +823,11 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
 void app_main(void)
 {
     ESP_LOGI(TAG, "AI Passport 小工具启动");
+    if (s_deep_sleep_magic == DEEP_SLEEP_MAGIC) {
+        ESP_LOGI(TAG, "deep sleep 唤醒: cause=%d count=%lu",
+                 (int)esp_sleep_get_wakeup_cause(),
+                 (unsigned long)s_deep_sleep_count);
+    }
     init_timezone();
     smoking_model_init(&s_model);
     s_cjk_font = smoking_font_18;
@@ -768,15 +874,6 @@ void app_main(void)
             ESP_LOGW(TAG, "保存任务启动失败: %s", esp_err_to_name(store_err));
             s_model.storage_warning = true;
         }
-    }
-
-    esp_err_t wifi_err = tools_wifi_init();
-    if (wifi_err != ESP_OK) {
-        ESP_LOGW(TAG, "Wi-Fi 初始化失败: %s", esp_err_to_name(wifi_err));
-    }
-    esp_err_t weather_err = tools_weather_init();
-    if (weather_err != ESP_OK) {
-        ESP_LOGW(TAG, "天气任务启动失败: %s", esp_err_to_name(weather_err));
     }
 
     esp_err_t input_err = input_dispatch_init();

@@ -51,6 +51,7 @@
 //   逐个按住三个键记下读数,取相邻两档的中点作为窗口边界,改下面的 BSP_BTN_MV 即可。
 // ============================================================================
 #define BSP_BTN_ADC_UNIT     ADC_UNIT_1
+#define BSP_BTN_GPIO         0              // ADC1_CH0 / GPIO0
 #define BSP_BTN_ADC_CHANNEL  ADC_CHANNEL_0    // GPIO0
 #define BSP_BTN_COUNT        3
 

@@ -9,7 +9,7 @@ static struct button_dev_t buttons[BSP_BTN_COUNT];
 static int adc_token, cal_token, adc_live, cal_live, live_buttons;
 static int create_calls, callback_calls, fail_create, fail_callback;
 static int fail_adc, fail_channel, fail_cal, fail_read, fail_convert, fail_delete;
-static int raw_mv, reads, events;
+static int raw_mv, reads, events, gpio_level = 1, gpio_config_calls;
 static int64_t clock_us;
 
 esp_err_t adc_oneshot_new_unit(const adc_oneshot_unit_init_cfg_t *cfg, adc_oneshot_unit_handle_t *h) {
@@ -46,6 +46,19 @@ esp_err_t adc_cali_raw_to_voltage(adc_cali_handle_t h, int raw, int *mv) {
     *mv = raw; return ESP_OK;
 }
 int64_t esp_timer_get_time(void) { return clock_us; }
+esp_err_t gpio_config(const gpio_config_t *config) {
+    assert(config->pin_bit_mask == (1ULL << BSP_BTN_GPIO));
+    assert(config->mode == GPIO_MODE_INPUT);
+    assert(config->pull_up_en == GPIO_PULLUP_ENABLE);
+    assert(config->pull_down_en == GPIO_PULLDOWN_DISABLE);
+    assert(config->intr_type == GPIO_INTR_DISABLE);
+    ++gpio_config_calls;
+    return ESP_OK;
+}
+int gpio_get_level(int gpio_num) {
+    assert(gpio_num == BSP_BTN_GPIO);
+    return gpio_level;
+}
 esp_err_t iot_button_create(const button_config_t *cfg, const button_driver_t *driver, button_handle_t *h) {
     // 判定门限必须由 BSP 显式下发(bsp_pins.h),不能退回组件默认的 180 / 1500ms。
     assert(cfg->short_press_time == BSP_BTN_SHORT_PRESS_MS);
@@ -129,6 +142,20 @@ int main(void) {
     fail_read = 0; fail_convert = 1; clock_us += 2000;
     for (int i = 0; i < BSP_BTN_COUNT; ++i) assert(!button_level(&s_drivers[i].base));
     assert(bsp_button_read_mv() == -1);
+    gpio_level = 0;
+    int level = 1;
+    assert(bsp_button_prepare_deep_sleep(&level) == ESP_OK);
+    assert(level == 0);
+    assert(gpio_config_calls == 1);
+    assert_clean();
+    gpio_level = 1;
+    assert(bsp_button_init(event_cb, &events) == ESP_OK);
+    level = 0;
+    assert(bsp_button_prepare_deep_sleep(&level) == ESP_OK);
+    assert(level == 1);
+    assert(gpio_config_calls == 2);
+    assert_clean();
+    assert(bsp_button_init(event_cb, &events) == ESP_OK);
     fail_delete = 1; button_cleanup();
     assert(adc_live && cal_live && live_buttons == BSP_BTN_COUNT);
     assert(bsp_button_init(event_cb, &events) == ESP_ERR_INVALID_STATE);
