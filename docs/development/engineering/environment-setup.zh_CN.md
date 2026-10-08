@@ -110,10 +110,12 @@ WSL2 可以执行 Linux 编译流程。烧录和监视需要把 USB 设备转发
 
 ## 安装 ESP-IDF 5.5.3
 
-安装位置应位于当前仓库之外，路径不得包含空格。以下变量只服务本任务，并允许用户覆盖：
+安装位置应位于当前仓库之外，路径不得包含空格。当前 checkout 的 ESP-IDF
+工作目录固定放在 `/Users/bytedance/Server/Env/ESP` 下，不再放到 `~/esp`。
+以下变量只服务本任务，并允许用户覆盖：
 
 ```bash
-export AI_PASSPORT_IDF_ROOT="${AI_PASSPORT_IDF_ROOT:-${HOME}/esp/esp-idf-v5.5.3}"
+export AI_PASSPORT_IDF_ROOT="${AI_PASSPORT_IDF_ROOT:-/Users/bytedance/Server/Env/ESP/esp-idf-v5.5.3}"
 ```
 
 ### 国际线路
@@ -157,7 +159,7 @@ IDF_GITHUB_ASSETS=dl.espressif.cn/github_assets \
 **Gitee 镜像及 esp-gitee-tools（备选）。**
 
 ```bash
-export AI_PASSPORT_GITEE_TOOLS_ROOT="${AI_PASSPORT_GITEE_TOOLS_ROOT:-${HOME}/esp/esp-gitee-tools}"
+export AI_PASSPORT_GITEE_TOOLS_ROOT="${AI_PASSPORT_GITEE_TOOLS_ROOT:-/Users/bytedance/Server/Env/ESP/esp-gitee-tools}"
 mkdir -p "$(dirname "${AI_PASSPORT_IDF_ROOT}")"
 git clone --branch v5.5.3 \
     https://gitee.com/EspressifSystems/esp-idf.git \

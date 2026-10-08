@@ -3,54 +3,8 @@
 #include <string.h>
 
 #define SECONDS_PER_DAY 86400u
-
-static const uint8_t SUDOKU_SOLUTIONS[SMOKING_SUDOKU_LEVELS][SMOKING_SUDOKU_CELLS] = {
-    {
-        1, 2, 3, 4, 5,
-        2, 3, 4, 5, 1,
-        3, 4, 5, 1, 2,
-        4, 5, 1, 2, 3,
-        5, 1, 2, 3, 4,
-    },
-    {
-        2, 4, 1, 3, 5,
-        3, 5, 2, 4, 1,
-        4, 1, 3, 5, 2,
-        5, 2, 4, 1, 3,
-        1, 3, 5, 2, 4,
-    },
-    {
-        5, 3, 1, 4, 2,
-        1, 4, 2, 5, 3,
-        2, 5, 3, 1, 4,
-        3, 1, 4, 2, 5,
-        4, 2, 5, 3, 1,
-    },
-};
-
-static const uint8_t SUDOKU_GIVEN[SMOKING_SUDOKU_LEVELS][SMOKING_SUDOKU_CELLS] = {
-    {
-        1, 0, 3, 0, 5,
-        0, 3, 0, 5, 0,
-        3, 0, 5, 0, 2,
-        0, 5, 0, 2, 0,
-        5, 0, 2, 0, 4,
-    },
-    {
-        2, 0, 0, 3, 5,
-        0, 5, 2, 0, 0,
-        4, 0, 3, 0, 2,
-        0, 2, 0, 1, 0,
-        1, 0, 5, 0, 4,
-    },
-    {
-        5, 0, 1, 0, 2,
-        0, 4, 0, 5, 0,
-        2, 0, 3, 0, 4,
-        0, 1, 0, 2, 0,
-        4, 0, 5, 0, 1,
-    },
-};
+#define SMOKING_LEGACY_SCREEN_SUDOKU 3u
+#define SMOKING_LEGACY_FEATURE_SETTINGS 2u
 
 static int32_t day_from_sec(uint32_t now_sec)
 {
@@ -64,16 +18,27 @@ static uint32_t sec_of_day(uint32_t now_sec)
 
 static bool valid_screen(uint8_t screen)
 {
-    return screen <= SMOKING_SCREEN_SETTINGS;
+    return screen == SMOKING_SCREEN_HOME ||
+           screen == SMOKING_SCREEN_ACTIVE ||
+           screen == SMOKING_SCREEN_COUNT_SELECT ||
+           screen == SMOKING_SCREEN_SETTINGS ||
+           screen == SMOKING_SCREEN_FOCUS;
 }
 
-static void reset_sudoku_to_level(smoking_sudoku_state_t *sudoku, uint8_t level)
+static uint16_t valid_daily_goal(uint16_t goal)
 {
-    memset(sudoku, 0, sizeof(*sudoku));
-    sudoku->level = level % SMOKING_SUDOKU_LEVELS;
-    sudoku->mode = SMOKING_SUDOKU_SELECT_CELL;
-    for (size_t i = 0; i < SMOKING_SUDOKU_CELLS; i++) {
-        sudoku->values[i] = SUDOKU_GIVEN[sudoku->level][i];
+    if (goal < SMOKING_MIN_DAILY_GOAL || goal > SMOKING_MAX_DAILY_GOAL) {
+        return SMOKING_DEFAULT_DAILY_GOAL;
+    }
+    return goal;
+}
+
+static void sanitize_selected_feature(uint8_t *feature)
+{
+    if (*feature == SMOKING_LEGACY_FEATURE_SETTINGS) {
+        *feature = SMOKING_FEATURE_SETTINGS;
+    } else if (*feature >= SMOKING_FEATURE_COUNT) {
+        *feature = SMOKING_FEATURE_SMOKE;
     }
 }
 
@@ -83,8 +48,10 @@ void smoking_model_init(smoking_model_t *model)
     model->persisted.version = SMOKING_MODEL_VERSION;
     model->persisted.screen = SMOKING_SCREEN_HOME;
     model->persisted.selected_feature = SMOKING_FEATURE_SMOKE;
+    model->persisted.daily_goal = SMOKING_DEFAULT_DAILY_GOAL;
     model->pending_cigarettes = 1;
-    reset_sudoku_to_level(&model->persisted.sudoku, 0);
+    model->focus_mode = SMOKING_FOCUS_WORK;
+    model->focus_remaining_sec = SMOKING_FOCUS_WORK_SEC;
 }
 
 void smoking_model_restore(smoking_model_t *model, const smoking_persist_state_t *state)
@@ -95,12 +62,12 @@ void smoking_model_restore(smoking_model_t *model, const smoking_persist_state_t
     model->persisted = *state;
     if (!valid_screen(model->persisted.screen) ||
         model->persisted.screen == SMOKING_SCREEN_ACTIVE ||
-        model->persisted.screen == SMOKING_SCREEN_COUNT_SELECT) {
+        model->persisted.screen == SMOKING_SCREEN_COUNT_SELECT ||
+        model->persisted.screen == SMOKING_LEGACY_SCREEN_SUDOKU) {
         model->persisted.screen = SMOKING_SCREEN_HOME;
     }
-    if (model->persisted.selected_feature >= SMOKING_FEATURE_COUNT) {
-        model->persisted.selected_feature = SMOKING_FEATURE_SMOKE;
-    }
+    sanitize_selected_feature(&model->persisted.selected_feature);
+    model->persisted.daily_goal = valid_daily_goal(model->persisted.daily_goal);
     for (size_t i = 0; i < SMOKING_HISTORY_DAYS; i++) {
         if (model->persisted.days[i].cigarettes > 200 ||
             model->persisted.days[i].duration_sec > SECONDS_PER_DAY) {
@@ -111,24 +78,14 @@ void smoking_model_restore(smoking_model_t *model, const smoking_persist_state_t
         model->persisted.last.duration_sec > SECONDS_PER_DAY) {
         memset(&model->persisted.last, 0, sizeof(model->persisted.last));
     }
-    if (model->persisted.sudoku.level >= SMOKING_SUDOKU_LEVELS ||
-        model->persisted.sudoku.selected_empty >= SMOKING_SUDOKU_CELLS ||
-        model->persisted.sudoku.mode > SMOKING_SUDOKU_SELECT_CELL) {
-        reset_sudoku_to_level(&model->persisted.sudoku, 0);
-    }
-    for (size_t i = 0; i < SMOKING_SUDOKU_CELLS; i++) {
-        if (model->persisted.sudoku.values[i] > SMOKING_SUDOKU_SIZE) {
-            reset_sudoku_to_level(&model->persisted.sudoku, model->persisted.sudoku.level);
-            break;
-        }
-        if (SUDOKU_GIVEN[model->persisted.sudoku.level][i]) {
-            model->persisted.sudoku.values[i] =
-                SUDOKU_GIVEN[model->persisted.sudoku.level][i];
-        }
-    }
     model->smoking_started_at = 0;
     model->pending_duration_sec = 0;
     model->pending_cigarettes = 1;
+    model->editing_goal = false;
+    model->focus_mode = SMOKING_FOCUS_WORK;
+    model->focus_running = false;
+    model->focus_started_at = 0;
+    model->focus_remaining_sec = SMOKING_FOCUS_WORK_SEC;
     model->dirty = false;
 }
 
@@ -136,17 +93,16 @@ smoking_persist_state_t smoking_model_persist_snapshot(const smoking_model_t *mo
 {
     smoking_persist_state_t state = model->persisted;
     state.version = SMOKING_MODEL_VERSION;
+    state.daily_goal = valid_daily_goal(state.daily_goal);
     state.screen = SMOKING_SCREEN_HOME;
-    if (state.selected_feature >= SMOKING_FEATURE_COUNT) {
-        state.selected_feature = SMOKING_FEATURE_SMOKE;
-    }
+    sanitize_selected_feature(&state.selected_feature);
     return state;
 }
 
 const char *smoking_feature_name(smoking_feature_t feature)
 {
     static const char *NAMES[] = {
-        "抽烟", "数独", "设置",
+        "抽烟", "专注", "设置",
     };
     return feature < SMOKING_FEATURE_COUNT ? NAMES[feature] : "";
 }
@@ -175,8 +131,8 @@ void smoking_model_enter_selected(smoking_model_t *model, uint32_t now_sec)
     case SMOKING_FEATURE_SMOKE:
         smoking_model_start(model, now_sec);
         break;
-    case SMOKING_FEATURE_SUDOKU:
-        model->persisted.screen = SMOKING_SCREEN_SUDOKU;
+    case SMOKING_FEATURE_FOCUS:
+        smoking_model_enter_focus(model);
         break;
     case SMOKING_FEATURE_SETTINGS:
         smoking_model_enter_time_settings(model, now_sec);
@@ -196,6 +152,7 @@ void smoking_model_enter_time_settings(smoking_model_t *model, uint32_t now_sec)
     model->edit_minute_selected = false;
     model->selected_setting = SMOKING_SETTING_TIME;
     model->editing_time = false;
+    model->editing_goal = false;
 }
 
 void smoking_model_return_home(smoking_model_t *model)
@@ -205,6 +162,8 @@ void smoking_model_return_home(smoking_model_t *model)
     model->pending_duration_sec = 0;
     model->pending_cigarettes = 1;
     model->editing_time = false;
+    model->editing_goal = false;
+    model->focus_running = false;
 }
 
 void smoking_model_start(smoking_model_t *model, uint32_t now_sec)
@@ -309,105 +268,67 @@ uint32_t smoking_model_last_interval_sec(const smoking_model_t *model, uint32_t 
     return now_sec > end_sec ? now_sec - end_sec : 0;
 }
 
-static size_t empty_count(uint8_t level)
+uint16_t smoking_model_daily_goal(const smoking_model_t *model)
 {
-    size_t count = 0;
-    for (size_t i = 0; i < SMOKING_SUDOKU_CELLS; i++) {
-        if (!SUDOKU_GIVEN[level][i]) count++;
+    return valid_daily_goal(model->persisted.daily_goal);
+}
+
+static bool has_any_record(const smoking_model_t *model, int32_t *oldest_day)
+{
+    bool found = false;
+    int32_t oldest = 0;
+    for (size_t i = 0; i < SMOKING_HISTORY_DAYS; i++) {
+        const smoking_day_stat_t *slot = &model->persisted.days[i];
+        if (slot->cigarettes == 0 && slot->duration_sec == 0) continue;
+        if (!found || slot->day < oldest) {
+            oldest = slot->day;
+        }
+        found = true;
     }
-    return count;
+    if (oldest_day) *oldest_day = oldest;
+    return found;
 }
 
-static size_t empty_cell_at(uint8_t level, uint8_t empty_index)
+static uint32_t cigarettes_on_day(const smoking_model_t *model, int32_t day)
 {
-    size_t found = 0;
-    for (size_t i = 0; i < SMOKING_SUDOKU_CELLS; i++) {
-        if (SUDOKU_GIVEN[level][i]) continue;
-        if (found == empty_index) return i;
-        found++;
+    return smoking_model_today(model, day).cigarettes;
+}
+
+uint8_t smoking_model_goal_streak(const smoking_model_t *model, int32_t today)
+{
+    int32_t oldest = 0;
+    if (!has_any_record(model, &oldest)) return 0;
+
+    uint16_t goal = smoking_model_daily_goal(model);
+    uint8_t streak = 0;
+    int32_t earliest = today - (int32_t)SMOKING_HISTORY_DAYS + 1;
+    if (earliest < oldest) earliest = oldest;
+    for (int32_t day = today; day >= earliest; day--) {
+        if (cigarettes_on_day(model, day) > goal) break;
+        streak++;
     }
-    return 0;
+    return streak;
 }
 
-void smoking_model_sudoku_reset(smoking_model_t *model)
+uint8_t smoking_model_goal_best_streak(const smoking_model_t *model, int32_t today)
 {
-    reset_sudoku_to_level(&model->persisted.sudoku, model->persisted.sudoku.level);
-}
+    int32_t oldest = 0;
+    if (!has_any_record(model, &oldest)) return 0;
 
-void smoking_model_sudoku_click(smoking_model_t *model)
-{
-    smoking_sudoku_state_t *sudoku = &model->persisted.sudoku;
-    size_t cell = empty_cell_at(sudoku->level, sudoku->selected_empty);
-    if (sudoku->values[cell] == 0) {
-        sudoku->values[cell] = 1;
-        sudoku->mode = SMOKING_SUDOKU_EDIT_DIGIT;
-    } else {
-        sudoku->mode = sudoku->mode == SMOKING_SUDOKU_EDIT_DIGIT ?
-            SMOKING_SUDOKU_SELECT_CELL : SMOKING_SUDOKU_EDIT_DIGIT;
-    }
-    model->dirty = true;
-}
-
-void smoking_model_sudoku_up(smoking_model_t *model)
-{
-    smoking_sudoku_state_t *sudoku = &model->persisted.sudoku;
-    size_t count = empty_count(sudoku->level);
-    if (sudoku->mode == SMOKING_SUDOKU_SELECT_CELL) {
-        sudoku->selected_empty = (uint8_t)((sudoku->selected_empty + count - 1u) % count);
-    } else {
-        size_t cell = empty_cell_at(sudoku->level, sudoku->selected_empty);
-        uint8_t value = sudoku->values[cell] ? sudoku->values[cell] : 1;
-        sudoku->values[cell] = value == 1 ? SMOKING_SUDOKU_SIZE : (uint8_t)(value - 1u);
-    }
-    model->dirty = true;
-}
-
-void smoking_model_sudoku_down(smoking_model_t *model)
-{
-    smoking_sudoku_state_t *sudoku = &model->persisted.sudoku;
-    size_t count = empty_count(sudoku->level);
-    if (sudoku->mode == SMOKING_SUDOKU_SELECT_CELL) {
-        sudoku->selected_empty = (uint8_t)((sudoku->selected_empty + 1u) % count);
-    } else {
-        size_t cell = empty_cell_at(sudoku->level, sudoku->selected_empty);
-        uint8_t value = sudoku->values[cell] ? sudoku->values[cell] : 0;
-        sudoku->values[cell] = (uint8_t)((value % SMOKING_SUDOKU_SIZE) + 1u);
-    }
-    model->dirty = true;
-    if (smoking_model_sudoku_complete(model)) {
-        reset_sudoku_to_level(&model->persisted.sudoku,
-                              (uint8_t)(sudoku->level + 1u));
-    }
-}
-
-uint8_t smoking_model_sudoku_cell_value(const smoking_model_t *model, size_t cell)
-{
-    if (cell >= SMOKING_SUDOKU_CELLS) return 0;
-    return model->persisted.sudoku.values[cell];
-}
-
-bool smoking_model_sudoku_cell_fixed(const smoking_model_t *model, size_t cell)
-{
-    if (cell >= SMOKING_SUDOKU_CELLS) return false;
-    return SUDOKU_GIVEN[model->persisted.sudoku.level][cell] != 0;
-}
-
-bool smoking_model_sudoku_cell_error(const smoking_model_t *model, size_t cell)
-{
-    if (cell >= SMOKING_SUDOKU_CELLS) return false;
-    uint8_t value = model->persisted.sudoku.values[cell];
-    return value != 0 && value != SUDOKU_SOLUTIONS[model->persisted.sudoku.level][cell];
-}
-
-bool smoking_model_sudoku_complete(const smoking_model_t *model)
-{
-    for (size_t i = 0; i < SMOKING_SUDOKU_CELLS; i++) {
-        if (model->persisted.sudoku.values[i] !=
-            SUDOKU_SOLUTIONS[model->persisted.sudoku.level][i]) {
-            return false;
+    uint16_t goal = smoking_model_daily_goal(model);
+    uint8_t best = 0;
+    uint8_t current = 0;
+    int32_t earliest = today - (int32_t)SMOKING_HISTORY_DAYS + 1;
+    if (earliest < oldest) earliest = oldest;
+    for (int32_t day = earliest; day <= today; day++) {
+        if (cigarettes_on_day(model, day) <= goal) {
+            current++;
+            if (current > best) best = current;
+        } else {
+            current = 0;
         }
     }
-    return true;
+    return best;
 }
 
 bool smoking_model_idle_backlight_allowed(const smoking_model_t *model)
@@ -415,8 +336,8 @@ bool smoking_model_idle_backlight_allowed(const smoking_model_t *model)
     switch ((smoking_screen_t)model->persisted.screen) {
     case SMOKING_SCREEN_HOME:
     case SMOKING_SCREEN_COUNT_SELECT:
-    case SMOKING_SCREEN_SUDOKU:
     case SMOKING_SCREEN_SETTINGS:
+    case SMOKING_SCREEN_FOCUS:
         return true;
     default:
         return false;
@@ -460,6 +381,13 @@ void smoking_model_time_click(smoking_model_t *model)
 
 void smoking_model_settings_up(smoking_model_t *model)
 {
+    if (model->editing_goal) {
+        if (model->persisted.daily_goal > SMOKING_MIN_DAILY_GOAL) {
+            model->persisted.daily_goal--;
+            model->dirty = true;
+        }
+        return;
+    }
     if (model->editing_time) {
         smoking_model_time_up(model);
         return;
@@ -471,6 +399,13 @@ void smoking_model_settings_up(smoking_model_t *model)
 
 void smoking_model_settings_down(smoking_model_t *model)
 {
+    if (model->editing_goal) {
+        if (model->persisted.daily_goal < SMOKING_MAX_DAILY_GOAL) {
+            model->persisted.daily_goal++;
+            model->dirty = true;
+        }
+        return;
+    }
     if (model->editing_time) {
         smoking_model_time_down(model);
         return;
@@ -485,8 +420,89 @@ void smoking_model_settings_click(smoking_model_t *model)
         smoking_model_time_click(model);
         return;
     }
+    if (model->editing_goal) {
+        model->editing_goal = false;
+        return;
+    }
     if (model->selected_setting == SMOKING_SETTING_TIME) {
         model->editing_time = true;
         model->edit_minute_selected = false;
+    } else if (model->selected_setting == SMOKING_SETTING_GOAL) {
+        model->persisted.daily_goal = smoking_model_daily_goal(model);
+        model->editing_goal = true;
     }
+}
+
+static uint32_t focus_default_remaining(const smoking_model_t *model)
+{
+    return model->focus_mode == SMOKING_FOCUS_BREAK ?
+        SMOKING_FOCUS_BREAK_SEC : SMOKING_FOCUS_WORK_SEC;
+}
+
+void smoking_model_enter_focus(smoking_model_t *model)
+{
+    model->persisted.screen = SMOKING_SCREEN_FOCUS;
+    model->focus_mode = SMOKING_FOCUS_WORK;
+    model->focus_running = false;
+    model->focus_started_at = 0;
+    model->focus_remaining_sec = SMOKING_FOCUS_WORK_SEC;
+}
+
+uint32_t smoking_model_focus_remaining(const smoking_model_t *model, uint32_t now_sec)
+{
+    if (!model->focus_running) return model->focus_remaining_sec;
+    uint32_t elapsed = now_sec > model->focus_started_at ?
+        now_sec - model->focus_started_at : 0;
+    return elapsed >= model->focus_remaining_sec ? 0 :
+        model->focus_remaining_sec - elapsed;
+}
+
+void smoking_model_focus_click(smoking_model_t *model, uint32_t now_sec)
+{
+    if (model->persisted.screen != SMOKING_SCREEN_FOCUS) return;
+    if (model->focus_running) {
+        model->focus_remaining_sec = smoking_model_focus_remaining(model, now_sec);
+        model->focus_running = false;
+        return;
+    }
+    if (model->focus_remaining_sec == 0) {
+        model->focus_remaining_sec = focus_default_remaining(model);
+    }
+    model->focus_started_at = now_sec;
+    model->focus_running = true;
+}
+
+void smoking_model_focus_reset(smoking_model_t *model)
+{
+    model->focus_running = false;
+    model->focus_started_at = 0;
+    model->focus_remaining_sec = focus_default_remaining(model);
+}
+
+void smoking_model_focus_toggle_mode(smoking_model_t *model)
+{
+    if (model->focus_running) return;
+    model->focus_mode = model->focus_mode == SMOKING_FOCUS_WORK ?
+        SMOKING_FOCUS_BREAK : SMOKING_FOCUS_WORK;
+    model->focus_remaining_sec = focus_default_remaining(model);
+}
+
+bool smoking_model_focus_tick(smoking_model_t *model, uint32_t now_sec)
+{
+    if (model->persisted.screen != SMOKING_SCREEN_FOCUS || !model->focus_running) {
+        return false;
+    }
+    if (smoking_model_focus_remaining(model, now_sec) > 0) return false;
+
+    model->focus_running = false;
+    model->focus_mode = model->focus_mode == SMOKING_FOCUS_WORK ?
+        SMOKING_FOCUS_BREAK : SMOKING_FOCUS_WORK;
+    model->focus_started_at = 0;
+    model->focus_remaining_sec = focus_default_remaining(model);
+    return true;
+}
+
+const char *smoking_model_focus_mode_name(const smoking_model_t *model)
+{
+    return model->focus_mode == SMOKING_FOCUS_BREAK ? "休息" : "专注";
 }

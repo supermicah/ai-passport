@@ -49,6 +49,16 @@ static void test_stats_and_interval(void)
     assert(smoking_model_last_interval_sec(&model, DAY(6) + 125) == 86400);
 }
 
+static void add_record(smoking_model_t *model, uint32_t day, uint8_t cigarettes)
+{
+    smoking_model_start(model, DAY(day) + 100);
+    smoking_model_finish(model, DAY(day) + 110);
+    if (cigarettes >= 2) {
+        smoking_model_count_up(model);
+    }
+    smoking_model_save_pending(model, DAY(day) + 110);
+}
+
 static void test_history_replaces_oldest(void)
 {
     smoking_model_t model;
@@ -82,57 +92,23 @@ static void test_restore_sanitizes_runtime_and_version(void)
     smoking_model_restore(&model, &state);
     assert(model.persisted.version == SMOKING_MODEL_VERSION);
     assert(model.persisted.selected_feature == SMOKING_FEATURE_SMOKE);
-}
 
-static size_t current_empty_cell(const smoking_model_t *model)
-{
-    uint8_t selected = model->persisted.sudoku.selected_empty;
-    size_t seen = 0;
-    for (size_t i = 0; i < SMOKING_SUDOKU_CELLS; i++) {
-        if (smoking_model_sudoku_cell_fixed(model, i)) continue;
-        if (seen == selected) return i;
-        seen++;
-    }
-    return 0;
-}
+    state = model.persisted;
+    state.daily_goal = 0;
+    smoking_model_restore(&model, &state);
+    assert(smoking_model_daily_goal(&model) == SMOKING_DEFAULT_DAILY_GOAL);
 
-static void test_sudoku_flow(void)
-{
-    smoking_model_t model;
-    smoking_model_init(&model);
-    model.persisted.selected_feature = SMOKING_FEATURE_SUDOKU;
-    smoking_model_enter_selected(&model, 0);
-    assert(model.persisted.screen == SMOKING_SCREEN_SUDOKU);
-    assert(model.persisted.sudoku.mode == SMOKING_SUDOKU_SELECT_CELL);
+    state = model.persisted;
+    state.daily_goal = SMOKING_MAX_DAILY_GOAL + 1;
+    smoking_model_restore(&model, &state);
+    assert(smoking_model_daily_goal(&model) == SMOKING_DEFAULT_DAILY_GOAL);
 
-    size_t first = current_empty_cell(&model);
-    smoking_model_sudoku_click(&model);
-    assert(model.persisted.sudoku.mode == SMOKING_SUDOKU_EDIT_DIGIT);
-    assert(smoking_model_sudoku_cell_value(&model, first) == 1);
-    smoking_model_sudoku_up(&model);
-    assert(smoking_model_sudoku_cell_value(&model, first) == 5);
-    smoking_model_sudoku_down(&model);
-    assert(smoking_model_sudoku_cell_value(&model, first) == 1);
-    smoking_model_sudoku_click(&model);
-    assert(model.persisted.sudoku.mode == SMOKING_SUDOKU_SELECT_CELL);
-    smoking_model_sudoku_down(&model);
-    assert(current_empty_cell(&model) != first);
-
-    smoking_model_sudoku_reset(&model);
-    assert(smoking_model_sudoku_cell_value(&model, first) == 0);
-
-    for (size_t i = 0; i < SMOKING_SUDOKU_CELLS; i++) {
-        if (!smoking_model_sudoku_cell_fixed(&model, i)) {
-            for (uint8_t v = 1; v <= 5; v++) {
-                model.persisted.sudoku.values[i] = v;
-                if (!smoking_model_sudoku_cell_error(&model, i)) break;
-            }
-        }
-    }
-    assert(smoking_model_sudoku_complete(&model));
-    uint8_t old_level = model.persisted.sudoku.level;
-    smoking_model_sudoku_down(&model);
-    assert(model.persisted.sudoku.level == (uint8_t)(old_level + 1));
+    state = model.persisted;
+    state.screen = 3;
+    state.selected_feature = 2;
+    smoking_model_restore(&model, &state);
+    assert(model.persisted.screen == SMOKING_SCREEN_HOME);
+    assert(model.persisted.selected_feature == SMOKING_FEATURE_SETTINGS);
 }
 
 static void test_idle_policy_and_feature_cycle(void)
@@ -145,7 +121,7 @@ static void test_idle_policy_and_feature_cycle(void)
     smoking_model_home_next(&model);
     assert(smoking_model_selected_feature(&model) == SMOKING_FEATURE_SMOKE);
     smoking_model_home_next(&model);
-    assert(smoking_model_selected_feature(&model) == SMOKING_FEATURE_SUDOKU);
+    assert(smoking_model_selected_feature(&model) == SMOKING_FEATURE_FOCUS);
     smoking_model_home_next(&model);
     assert(smoking_model_selected_feature(&model) == SMOKING_FEATURE_SETTINGS);
     smoking_model_home_next(&model);
@@ -158,15 +134,15 @@ static void test_idle_policy_and_feature_cycle(void)
     assert(smoking_model_idle_backlight_allowed(&model));
 
     smoking_model_return_home(&model);
-    model.persisted.selected_feature = SMOKING_FEATURE_SUDOKU;
-    smoking_model_enter_selected(&model, 10);
-    assert(model.persisted.screen == SMOKING_SCREEN_SUDOKU);
-    assert(smoking_model_idle_backlight_allowed(&model));
-
-    smoking_model_return_home(&model);
     model.persisted.selected_feature = SMOKING_FEATURE_SETTINGS;
     smoking_model_enter_selected(&model, 10);
     assert(model.persisted.screen == SMOKING_SCREEN_SETTINGS);
+    assert(smoking_model_idle_backlight_allowed(&model));
+
+    smoking_model_return_home(&model);
+    model.persisted.selected_feature = SMOKING_FEATURE_FOCUS;
+    smoking_model_enter_selected(&model, 10);
+    assert(model.persisted.screen == SMOKING_SCREEN_FOCUS);
     assert(smoking_model_idle_backlight_allowed(&model));
 }
 
@@ -185,8 +161,10 @@ static void test_settings_menu_and_time_edit(void)
     assert(!model.edit_minute_selected);
 
     smoking_model_settings_down(&model);
-    assert(model.selected_setting == SMOKING_SETTING_WIFI);
+    assert(model.selected_setting == SMOKING_SETTING_GOAL);
     assert(!model.editing_time);
+    smoking_model_settings_down(&model);
+    assert(model.selected_setting == SMOKING_SETTING_WIFI);
     smoking_model_settings_down(&model);
     assert(model.selected_setting == SMOKING_SETTING_TIME);
 
@@ -201,14 +179,87 @@ static void test_settings_menu_and_time_edit(void)
     assert(model.edit_minute == 23);
 }
 
+static void test_goal_settings_and_streaks(void)
+{
+    smoking_model_t model;
+    smoking_model_init(&model);
+    assert(smoking_model_daily_goal(&model) == SMOKING_DEFAULT_DAILY_GOAL);
+
+    model.persisted.selected_feature = SMOKING_FEATURE_SETTINGS;
+    smoking_model_enter_selected(&model, DAY(9));
+    smoking_model_settings_down(&model);
+    assert(model.selected_setting == SMOKING_SETTING_GOAL);
+    smoking_model_settings_click(&model);
+    assert(model.editing_goal);
+    smoking_model_settings_up(&model);
+    assert(smoking_model_daily_goal(&model) == SMOKING_DEFAULT_DAILY_GOAL - 1);
+    smoking_model_settings_down(&model);
+    smoking_model_settings_down(&model);
+    assert(smoking_model_daily_goal(&model) == SMOKING_DEFAULT_DAILY_GOAL);
+    assert(model.dirty);
+    smoking_model_settings_click(&model);
+    assert(!model.editing_goal);
+
+    smoking_model_settings_down(&model);
+    assert(model.selected_setting == SMOKING_SETTING_WIFI);
+    smoking_model_settings_click(&model);
+    assert(!model.editing_time);
+    assert(!model.editing_goal);
+
+    model.persisted.daily_goal = 2;
+    add_record(&model, 10, 1);
+    add_record(&model, 11, 2);
+    add_record(&model, 11, 2);
+    add_record(&model, 12, 1);
+    add_record(&model, 13, 2);
+
+    assert(smoking_model_goal_streak(&model, 13) == 2);
+    assert(smoking_model_goal_best_streak(&model, 13) == 2);
+    assert(smoking_model_goal_streak(&model, 12) == 1);
+    assert(smoking_model_goal_best_streak(&model, 12) == 1);
+}
+
+static void test_focus_timer_flow(void)
+{
+    smoking_model_t model;
+    smoking_model_init(&model);
+
+    smoking_model_enter_focus(&model);
+    assert(model.persisted.screen == SMOKING_SCREEN_FOCUS);
+    assert(model.focus_mode == SMOKING_FOCUS_WORK);
+    assert(!model.focus_running);
+    assert(smoking_model_focus_remaining(&model, 100) == SMOKING_FOCUS_WORK_SEC);
+    assert(strcmp(smoking_model_focus_mode_name(&model), "专注") == 0);
+
+    smoking_model_focus_click(&model, 100);
+    assert(model.focus_running);
+    assert(smoking_model_focus_remaining(&model, 160) == SMOKING_FOCUS_WORK_SEC - 60);
+    smoking_model_focus_click(&model, 160);
+    assert(!model.focus_running);
+    assert(smoking_model_focus_remaining(&model, 300) == SMOKING_FOCUS_WORK_SEC - 60);
+
+    smoking_model_focus_toggle_mode(&model);
+    assert(model.focus_mode == SMOKING_FOCUS_BREAK);
+    assert(smoking_model_focus_remaining(&model, 300) == SMOKING_FOCUS_BREAK_SEC);
+    assert(strcmp(smoking_model_focus_mode_name(&model), "休息") == 0);
+
+    smoking_model_focus_click(&model, 400);
+    assert(!smoking_model_focus_tick(&model, 400 + SMOKING_FOCUS_BREAK_SEC - 1));
+    assert(smoking_model_focus_tick(&model, 400 + SMOKING_FOCUS_BREAK_SEC));
+    assert(!model.focus_running);
+    assert(model.focus_mode == SMOKING_FOCUS_WORK);
+    assert(smoking_model_focus_remaining(&model, 800) == SMOKING_FOCUS_WORK_SEC);
+}
+
 int main(void)
 {
     test_smoking_record_flow();
     test_stats_and_interval();
     test_history_replaces_oldest();
     test_restore_sanitizes_runtime_and_version();
-    test_sudoku_flow();
     test_idle_policy_and_feature_cycle();
     test_settings_menu_and_time_edit();
+    test_goal_settings_and_streaks();
+    test_focus_timer_flow();
     return 0;
 }

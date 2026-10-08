@@ -13,6 +13,7 @@ static const char *TAG = "smoking_store";
 
 #define STORE_NAMESPACE "smoking"
 #define STORE_KEY "state"
+#define STORE_CLOCK_KEY "clock"
 #define STORE_MAGIC 0x534D4B31u
 #define STORE_QUEUE_DEPTH 1
 
@@ -132,6 +133,45 @@ esp_err_t smoking_store_load(smoking_persist_state_t *state, bool *loaded)
     if (state) *state = blob.state;
     if (loaded) *loaded = true;
     return ESP_OK;
+}
+
+esp_err_t smoking_store_load_clock(uint32_t *clock_sec, bool *loaded)
+{
+    if (loaded) *loaded = false;
+    nvs_handle_t handle = 0;
+    esp_err_t err = nvs_open(STORE_NAMESPACE, NVS_READONLY, &handle);
+    if (err == ESP_ERR_NVS_NOT_FOUND) return ESP_OK;
+    if (err != ESP_OK) return err;
+
+    uint32_t value = 0;
+    err = nvs_get_u32(handle, STORE_CLOCK_KEY, &value);
+    nvs_close(handle);
+    if (err == ESP_ERR_NVS_NOT_FOUND) return ESP_OK;
+    if (err != ESP_OK) return err;
+
+    if (clock_sec) *clock_sec = value;
+    if (loaded) *loaded = true;
+    return ESP_OK;
+}
+
+esp_err_t smoking_store_save_clock(uint32_t clock_sec)
+{
+    nvs_handle_t handle = 0;
+    esp_err_t err = nvs_open(STORE_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) return err;
+    err = nvs_set_u32(handle, STORE_CLOCK_KEY, clock_sec);
+    if (err == ESP_OK) err = nvs_commit(handle);
+    nvs_close(handle);
+    return err;
+}
+
+esp_err_t smoking_store_save(const smoking_persist_state_t *state)
+{
+    if (!state) return ESP_ERR_INVALID_ARG;
+    smoking_store_blob_t blob = make_blob(state);
+    esp_err_t err = write_blob(&blob);
+    if (s_status_cb) s_status_cb(err, s_status_user);
+    return err;
 }
 
 esp_err_t smoking_store_save_async(const smoking_persist_state_t *state)

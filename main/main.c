@@ -7,6 +7,8 @@
 #include "lvgl.h"
 #include "smoking_model.h"
 #include "smoking_store.h"
+#include "tools_weather.h"
+#include "tools_wifi.h"
 
 #include "esp_err.h"
 #include "esp_log.h"
@@ -18,6 +20,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
 #include <time.h>
@@ -32,6 +35,8 @@ static const char *TAG = "tools_app";
 #define UI_REFRESH_MS 250
 #define AUDIO_HZ 16000u
 #define BEEP_SAMPLES 960u
+#define CLOCK_SAVE_INTERVAL_SEC 60u
+#define LOCAL_TIME_OFFSET_SEC (8u * 3600u)
 
 typedef struct {
     bsp_btn_t btn;
@@ -51,10 +56,13 @@ static bool s_input_ready;
 static bool s_battery_ok;
 static bool s_audio_ok;
 static bool s_backlight_on = true;
+static bool s_clock_persistence_enabled;
 static uint32_t s_last_input_sec;
+static uint32_t s_last_clock_save_sec;
 static lv_obj_t *s_screen;
 static lv_font_t s_cjk_font;
 static bool s_count_wait_ok_release;
+static bool s_ignore_wake_tail;
 static int16_t s_beep_samples[BEEP_SAMPLES];
 
 static uint32_t now_sec(void)
@@ -66,7 +74,28 @@ static uint32_t now_sec(void)
 
 static int32_t today_day(void)
 {
-    return (int32_t)(now_sec() / 86400u);
+    return (int32_t)((now_sec() + LOCAL_TIME_OFFSET_SEC) / 86400u);
+}
+
+static uint32_t model_time_sec(uint32_t now)
+{
+    return now + LOCAL_TIME_OFFSET_SEC;
+}
+
+static uint32_t local_seconds_of_day(uint32_t now)
+{
+    time_t raw = (time_t)now;
+    struct tm tm_now;
+    localtime_r(&raw, &tm_now);
+    return (uint32_t)tm_now.tm_hour * 3600u +
+           (uint32_t)tm_now.tm_min * 60u +
+           (uint32_t)tm_now.tm_sec;
+}
+
+static void init_timezone(void)
+{
+    setenv("TZ", "CST-8", 1);
+    tzset();
 }
 
 static void format_clock(uint32_t now, char *buf, size_t len)
@@ -128,6 +157,59 @@ static lv_obj_t *panel(lv_obj_t *parent, int x, int y, int w, int h,
     return obj;
 }
 
+static void render_setting_row(lv_obj_t *root, int y, const char *title,
+                               const char *value, const char *hint,
+                               bool selected, bool active)
+{
+    uint32_t bg = selected ? 0xE0F2FE : 0xFFFFFF;
+    uint32_t bd = selected ? 0x0284C7 : 0xCBD5E1;
+    uint32_t title_color = selected ? 0x075985 : 0x334155;
+    uint32_t value_color = active ? 0xB45309 : (selected ? 0x0369A1 : 0x475569);
+
+    panel(root, 14, y, 212, 48, bg, bd);
+    label(root, title, 28, y + 7, 88, title_color);
+    lv_obj_t *value_label = label(root, value, 110, y + 7, 100, value_color);
+    lv_obj_set_style_text_align(value_label, LV_TEXT_ALIGN_RIGHT, 0);
+    label(root, hint, 28, y + 28, 182, selected ? 0x0F766E : 0x64748B);
+}
+
+static const char *wifi_status_text(tools_wifi_status_t status)
+{
+    switch (status.state) {
+    case TOOLS_WIFI_TIME_SYNCED:
+        return "已同步";
+    case TOOLS_WIFI_CONNECTED:
+        return "同步中";
+    case TOOLS_WIFI_CONNECTING:
+        return "连接中";
+    case TOOLS_WIFI_PHONE_CONNECTED:
+        return "手机已连";
+    case TOOLS_WIFI_BLE_READY:
+        return "配网中";
+    case TOOLS_WIFI_NO_CREDENTIALS:
+        return "未配网";
+    case TOOLS_WIFI_FAILED:
+        return "失败";
+    case TOOLS_WIFI_STARTING:
+        return "启动中";
+    case TOOLS_WIFI_OFF:
+    default:
+        return "未启动";
+    }
+}
+
+static const char *wifi_hint_text(tools_wifi_status_t status)
+{
+    if (status.provisioning) return "OK 停止配网";
+    if (status.state == TOOLS_WIFI_CONNECTED || status.state == TOOLS_WIFI_TIME_SYNCED) {
+        return status.ip[0] ? status.ip : "长按清除";
+    }
+    if (status.state == TOOLS_WIFI_CONNECTING || status.state == TOOLS_WIFI_STARTING) {
+        return "等待网络";
+    }
+    return "OK 开始配网";
+}
+
 static void render_header(lv_obj_t *root, uint32_t now)
 {
     char clock[16];
@@ -157,60 +239,80 @@ static void render_home(lv_obj_t *root, uint32_t now)
         label(root, "待保存", 170, 32, 58, 0xB91C1C);
     }
 
+    tools_wifi_status_t wifi = tools_wifi_status();
+    tools_weather_status_t weather = tools_weather_status();
+    char line[80];
+    snprintf(line, sizeof(line), "%s%s", weather.summary,
+             weather.updating ? " 更新中" : "");
+    label(root, line, 14, 58, 212, weather.valid ? 0x0F766E : 0x64748B);
+
+    snprintf(line, sizeof(line), "时间 %s  Wi-Fi %s",
+             wifi.time_synced ? "网络" :
+             (s_clock_persistence_enabled ? "离线" : "未同步"),
+             wifi_status_text(wifi));
+    label(root, line, 14, 82, 212, wifi.time_synced ? 0x166534 : 0xB45309);
+
+    smoking_totals_t today = smoking_model_today(&s_model, today_day());
+    panel(root, 14, 106, 212, 58, 0xFFFFFF, 0xCBD5E1);
+    snprintf(line, sizeof(line), "今日 %lu/%u 根",
+             (unsigned long)today.cigarettes, smoking_model_daily_goal(&s_model));
+    label(root, line, 26, 116, 188, 0x111827);
+    snprintf(line, sizeof(line), "低于目标 %u天  最好 %u天",
+             smoking_model_goal_streak(&s_model, today_day()),
+             smoking_model_goal_best_streak(&s_model, today_day()));
+    label(root, line, 26, 140, 188, 0x475569);
+
     smoking_feature_t selected = smoking_model_selected_feature(&s_model);
-    for (int i = -1; i <= 1; i++) {
-        int index = ((int)selected + i + (int)SMOKING_FEATURE_COUNT) %
-                    (int)SMOKING_FEATURE_COUNT;
-        bool is_selected = i == 0;
+    for (int i = 0; i < (int)SMOKING_FEATURE_COUNT; i++) {
+        smoking_feature_t feature = (smoking_feature_t)i;
+        bool is_selected = selected == feature;
         uint32_t bg = is_selected ? 0xDBEAFE : 0xF8FAFC;
         uint32_t bd = is_selected ? 0x2563EB : 0xCBD5E1;
-        lv_obj_t *card = panel(root, 14, 62 + (i + 1) * 42, 212, 34, bg, bd);
-        lv_obj_t *name = label(card, smoking_feature_name((smoking_feature_t)index),
-                               10, 5, 180, is_selected ? 0x1D4ED8 : 0x334155);
+        lv_obj_t *card = panel(root, 14, 178 + i * 34, 212, 30, bg, bd);
+        lv_obj_t *name = label(card, smoking_feature_name(feature),
+                               10, 2, 180, is_selected ? 0x1D4ED8 : 0x334155);
         lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
     }
 
-    if (selected == SMOKING_FEATURE_SMOKE) {
-        smoking_totals_t today = smoking_model_today(&s_model, today_day());
-        smoking_totals_t week = smoking_model_last_7_days(&s_model, today_day());
+    if (selected == SMOKING_FEATURE_FOCUS) {
+        uint32_t remaining = smoking_model_focus_remaining(&s_model, now);
         char dur[24];
-        char line[72];
-        int y = 196;
-        format_duration(today.duration_sec, dur, sizeof(dur));
-        snprintf(line, sizeof(line), "今日 %lu 根  %s",
-                 (unsigned long)today.cigarettes, dur);
-        label(root, line, 14, y, 212, 0x111827);
-        y += 24;
-        format_duration(week.duration_sec, dur, sizeof(dur));
-        snprintf(line, sizeof(line), "七天 %lu 根  %s",
-                 (unsigned long)week.cigarettes, dur);
-        label(root, line, 14, y, 212, 0x111827);
-        y += 24;
-        if (s_model.persisted.last.valid) {
-            format_duration(s_model.persisted.last.duration_sec, dur, sizeof(dur));
-            snprintf(line, sizeof(line), "上次 %u 根  %s",
-                     s_model.persisted.last.cigarettes, dur);
-            label(root, line, 14, y, 212, 0x475569);
-            y += 24;
-            format_duration(smoking_model_last_interval_sec(&s_model, now),
-                            dur, sizeof(dur));
-            snprintf(line, sizeof(line), "间隔 %s", dur);
-            label(root, line, 14, y, 212, 0x475569);
-        } else {
-            label(root, "还没有抽烟记录", 14, y, 212, 0x64748B);
-        }
+        format_duration(remaining, dur, sizeof(dur));
+        snprintf(line, sizeof(line), "%s %s",
+                 smoking_model_focus_mode_name(&s_model), dur);
+        label(root, line, 14, 282, 132, 0x475569);
+        label(root, "OK 进入", 156, 282, 70, 0x475569);
+    } else if (selected == SMOKING_FEATURE_SETTINGS) {
+        label(root, "OK 进入设置", 14, 282, 212, 0x475569);
     } else {
-        label(root, "OK 进入  长按调时间", 14, 208, 212, 0x475569);
-        label(root, "UP/DOWN 循环切换", 14, 234, 212, 0x475569);
+        label(root, "OK 开始抽烟记录", 14, 282, 212, 0x475569);
     }
+}
+
+static void render_focus(lv_obj_t *root, uint32_t now)
+{
+    label(root, "番茄钟", 14, 46, 120, 0x111827);
+    label(root, smoking_model_focus_mode_name(&s_model), 154, 46, 72, 0x2563EB);
+
+    uint32_t remaining = smoking_model_focus_remaining(&s_model, now);
+    char dur[24];
+    format_duration(remaining, dur, sizeof(dur));
+    lv_obj_t *timer = label(root, dur, 22, 116, 196, 0x111827);
+    lv_obj_set_style_text_font(timer, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_align(timer, LV_TEXT_ALIGN_CENTER, 0);
+
+    label(root, s_model.focus_running ? "OK 暂停" : "OK 开始", 70, 204, 100, 0x475569);
+    label(root, "UP/DOWN 切换模式", 42, 232, 170, 0x475569);
+    label(root, "长按返回", 76, 260, 100, 0x475569);
 }
 
 static void render_smoking_active(lv_obj_t *root, uint32_t now)
 {
     label(root, "抽烟中", 14, 46, 120, 0x991B1B);
     char dur[24];
-    format_duration(now > s_model.smoking_started_at ?
-                    now - s_model.smoking_started_at : 0, dur, sizeof(dur));
+    uint32_t model_now = model_time_sec(now);
+    format_duration(model_now > s_model.smoking_started_at ?
+                    model_now - s_model.smoking_started_at : 0, dur, sizeof(dur));
     lv_obj_t *timer = label(root, dur, 22, 116, 196, 0x111827);
     lv_obj_set_style_text_font(timer, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_align(timer, LV_TEXT_ALIGN_CENTER, 0);
@@ -236,79 +338,45 @@ static void render_count_select(lv_obj_t *root)
     label(root, "OK 保存", 76, 246, 100, 0x475569);
 }
 
-static void render_sudoku(lv_obj_t *root)
-{
-    char title[32];
-    snprintf(title, sizeof(title), "数独 第 %u 关", s_model.persisted.sudoku.level + 1);
-    label(root, title, 14, 38, 150, 0x111827);
-    label(root, s_model.persisted.sudoku.mode == SMOKING_SUDOKU_EDIT_DIGIT ?
-          "改数字" : "选空格", 156, 38, 70, 0x2563EB);
-
-    size_t selected_cell = 0;
-    uint8_t selected_empty = s_model.persisted.sudoku.selected_empty;
-    size_t seen = 0;
-    for (size_t i = 0; i < SMOKING_SUDOKU_CELLS; i++) {
-        if (smoking_model_sudoku_cell_fixed(&s_model, i)) continue;
-        if (seen == selected_empty) {
-            selected_cell = i;
-            break;
-        }
-        seen++;
-    }
-
-    for (size_t cell = 0; cell < SMOKING_SUDOKU_CELLS; cell++) {
-        int row = (int)(cell / SMOKING_SUDOKU_SIZE);
-        int col = (int)(cell % SMOKING_SUDOKU_SIZE);
-        bool fixed = smoking_model_sudoku_cell_fixed(&s_model, cell);
-        bool selected = cell == selected_cell;
-        bool error = smoking_model_sudoku_cell_error(&s_model, cell);
-        uint32_t bg = fixed ? 0xE2E8F0 : (selected ? 0xFEF3C7 : 0xFFFFFF);
-        uint32_t bd = error ? 0xDC2626 : (selected ? 0xD97706 : 0xCBD5E1);
-        lv_obj_t *box = panel(root, 20 + col * 40, 74 + row * 40, 34, 34, bg, bd);
-        char value[4] = "";
-        uint8_t v = smoking_model_sudoku_cell_value(&s_model, cell);
-        if (v) snprintf(value, sizeof(value), "%u", v);
-        lv_obj_t *num = label(box, value, 0, 4, 30, fixed ? 0x334155 : 0x111827);
-        lv_obj_set_style_text_font(num, &lv_font_montserrat_20, 0);
-        lv_obj_set_style_text_align(num, LV_TEXT_ALIGN_CENTER, 0);
-    }
-    label(root, "OK 切换  双击重置", 22, 266, 196, 0x475569);
-    lv_obj_t *back = label(root, "长按返回", 22, 290, 196, 0x475569);
-    lv_obj_set_style_text_align(back, LV_TEXT_ALIGN_CENTER, 0);
-}
-
 static void render_settings(lv_obj_t *root)
 {
-    label(root, "设置", 14, 44, 80, 0x111827);
+    label(root, "设置", 14, 42, 80, 0x111827);
     bool time_selected = s_model.selected_setting == SMOKING_SETTING_TIME;
+    bool goal_selected = s_model.selected_setting == SMOKING_SETTING_GOAL;
     bool wifi_selected = s_model.selected_setting == SMOKING_SETTING_WIFI;
-    bool editing = s_model.editing_time;
 
-    panel(root, 14, 78, 212, 82,
-          time_selected ? 0xDBEAFE : 0xF8FAFC,
-          time_selected ? 0x2563EB : 0xCBD5E1);
-    label(root, "时间设置", 28, 98, 100, 0x111827);
-    char value[24];
-    snprintf(value, sizeof(value), "%02d:%02d:00", s_model.edit_hour, s_model.edit_minute);
-    lv_obj_t *time_label = label(root, value, 28, 128, 160, 0x2563EB);
-    lv_obj_set_style_text_font(time_label, &lv_font_montserrat_20, 0);
-    label(root, editing ?
-          (s_model.edit_minute_selected ? "编辑分钟" : "编辑小时") :
-          "OK 进入编辑",
-          28, 150, 160, editing ? 0xB45309 : 0x64748B);
+    char time_value[24];
+    snprintf(time_value, sizeof(time_value), "%02d:%02d", s_model.edit_hour,
+             s_model.edit_minute);
+    render_setting_row(root, 76, "时间", time_value,
+                       s_model.editing_time ?
+                       (s_model.edit_minute_selected ? "编辑分钟" : "编辑小时") :
+                       "OK 编辑时间",
+                       time_selected, s_model.editing_time);
 
-    panel(root, 14, 172, 212, 50,
-          wifi_selected ? 0xDBEAFE : 0xFFFFFF,
-          wifi_selected ? 0x2563EB : 0xCBD5E1);
-    label(root, "Wi-Fi 设置", 28, 188, 100, wifi_selected ? 0x1D4ED8 : 0x475569);
-    label(root, "待接入", 156, 188, 62, 0x94A3B8);
+    char goal_value[16];
+    snprintf(goal_value, sizeof(goal_value), "%u 根",
+             smoking_model_daily_goal(&s_model));
+    render_setting_row(root, 132, "目标", goal_value,
+                       s_model.editing_goal ? "UP/DOWN 调整" : "OK 编辑目标",
+                       goal_selected, s_model.editing_goal);
 
-    if (editing) {
-        label(root, "UP/DOWN 调整", 20, 246, 200, 0x475569);
-        label(root, "OK 切字段  长按保存", 20, 272, 200, 0x475569);
+    tools_wifi_status_t wifi = tools_wifi_status();
+    render_setting_row(root, 188, "Wi-Fi", wifi_status_text(wifi),
+                       wifi_hint_text(wifi), wifi_selected, wifi.provisioning);
+
+    if (s_model.editing_time) {
+        label(root, "UP/DOWN 调整", 20, 254, 200, 0x475569);
+        label(root, "OK 切字段  长按保存", 20, 280, 200, 0x475569);
+    } else if (s_model.editing_goal) {
+        label(root, "UP 减少  DOWN 增加", 20, 254, 200, 0x475569);
+        label(root, "OK 返回  长按返回", 20, 280, 200, 0x475569);
+    } else if (wifi_selected) {
+        label(root, "OK 开关配网", 20, 254, 200, 0x475569);
+        label(root, "长按清除Wi-Fi", 20, 280, 200, 0x475569);
     } else {
-        label(root, "UP/DOWN 选择", 20, 246, 200, 0x475569);
-        label(root, "OK 进入  长按返回", 20, 272, 200, 0x475569);
+        label(root, "UP/DOWN 选择", 20, 254, 200, 0x475569);
+        label(root, "OK 进入  长按返回", 20, 280, 200, 0x475569);
     }
 }
 
@@ -339,11 +407,11 @@ static void render_ui(void)
     case SMOKING_SCREEN_COUNT_SELECT:
         render_count_select(s_screen);
         break;
-    case SMOKING_SCREEN_SUDOKU:
-        render_sudoku(s_screen);
-        break;
     case SMOKING_SCREEN_SETTINGS:
         render_settings(s_screen);
+        break;
+    case SMOKING_SCREEN_FOCUS:
+        render_focus(s_screen, now);
         break;
     default:
         smoking_model_return_home(&s_model);
@@ -363,10 +431,11 @@ static void queue_save_if_dirty(void)
 {
     if (!s_model.dirty) return;
     smoking_persist_state_t snapshot = smoking_model_persist_snapshot(&s_model);
-    esp_err_t err = smoking_store_save_async(&snapshot);
+    esp_err_t err = smoking_store_save(&snapshot);
     if (err == ESP_OK) {
         s_model.dirty = false;
     } else {
+        ESP_LOGW(TAG, "保存抽烟状态失败: %s", esp_err_to_name(err));
         s_model.storage_warning = true;
     }
 }
@@ -375,6 +444,53 @@ static void store_status(esp_err_t result, void *user)
 {
     (void)user;
     s_model.storage_warning = result != ESP_OK;
+}
+
+static void restore_clock_if_available(void)
+{
+    uint32_t saved = 0;
+    bool loaded = false;
+    esp_err_t err = smoking_store_load_clock(&saved, &loaded);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "读取离线时间失败: %s", esp_err_to_name(err));
+        s_model.storage_warning = true;
+        return;
+    }
+    if (!loaded) return;
+    s_clock_persistence_enabled = true;
+    if (now_sec() >= saved) return;
+
+    const struct timeval tv = {
+        .tv_sec = (time_t)saved,
+        .tv_usec = 0,
+    };
+    if (settimeofday(&tv, NULL) == 0) {
+        ESP_LOGI(TAG, "已恢复离线时间: %lu", (unsigned long)saved);
+    } else {
+        ESP_LOGW(TAG, "恢复离线时间失败");
+        s_model.storage_warning = true;
+    }
+}
+
+static void save_clock_if_due(bool force)
+{
+    if (force) {
+        s_clock_persistence_enabled = true;
+    }
+    if (!s_clock_persistence_enabled) return;
+
+    uint32_t now = now_sec();
+    if (!force && s_last_clock_save_sec &&
+        now - s_last_clock_save_sec < CLOCK_SAVE_INTERVAL_SEC) {
+        return;
+    }
+    esp_err_t err = smoking_store_save_clock(now);
+    if (err == ESP_OK) {
+        s_last_clock_save_sec = now;
+    } else {
+        ESP_LOGW(TAG, "保存离线时间失败: %s", esp_err_to_name(err));
+        s_model.storage_warning = true;
+    }
 }
 
 static void save_time_and_return_home(void)
@@ -392,11 +508,35 @@ static void save_time_and_return_home(void)
     };
     if (updated >= 0) {
         settimeofday(&tv, NULL);
+        save_clock_if_due(true);
     }
     smoking_model_return_home(&s_model);
     s_backlight_on = true;
     s_last_input_sec = now_sec();
     bsp_display_backlight(100);
+}
+
+static void toggle_wifi_provisioning(void)
+{
+    tools_wifi_status_t status = tools_wifi_status();
+    if (status.provisioning) {
+        tools_wifi_stop_provisioning();
+        return;
+    }
+
+    esp_err_t err = tools_wifi_start_provisioning();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "启动 Wi-Fi 配网失败: %s", esp_err_to_name(err));
+    }
+}
+
+static void clear_wifi_credentials(void)
+{
+    tools_wifi_stop_provisioning();
+    esp_err_t err = tools_wifi_clear_credentials();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "清除 Wi-Fi 凭据失败: %s", esp_err_to_name(err));
+    }
 }
 
 static bool count_select_ready_for_input(const input_event_t *input)
@@ -420,26 +560,40 @@ static void process_input(const input_event_t *input)
     if (!s_backlight_on) {
         bsp_display_backlight(100);
         s_backlight_on = true;
+        s_ignore_wake_tail = input->event == BSP_BTN_PRESS;
         s_last_input_sec = now;
         request_render();
         return;
+    }
+    if (s_ignore_wake_tail) {
+        if (input->event != BSP_BTN_PRESS) {
+            s_ignore_wake_tail = false;
+            s_last_input_sec = now;
+            request_render();
+            return;
+        }
+        s_ignore_wake_tail = false;
     }
     s_last_input_sec = now;
 
     smoking_screen_t screen = (smoking_screen_t)s_model.persisted.screen;
     if (screen == SMOKING_SCREEN_HOME) {
         if (input->event == BSP_BTN_LONG && input->btn == BSP_BTN_OK) {
-            smoking_model_enter_time_settings(&s_model, now);
+            smoking_model_enter_time_settings(&s_model, local_seconds_of_day(now));
         } else if (input->event == BSP_BTN_CLICK && input->btn == BSP_BTN_UP) {
             smoking_model_home_prev(&s_model);
         } else if (input->event == BSP_BTN_CLICK && input->btn == BSP_BTN_DOWN) {
             smoking_model_home_next(&s_model);
         } else if (input->event == BSP_BTN_CLICK && input->btn == BSP_BTN_OK) {
-            smoking_model_enter_selected(&s_model, now);
+            if (smoking_model_selected_feature(&s_model) == SMOKING_FEATURE_SETTINGS) {
+                smoking_model_enter_time_settings(&s_model, local_seconds_of_day(now));
+            } else {
+                smoking_model_enter_selected(&s_model, model_time_sec(now));
+            }
         }
     } else if (screen == SMOKING_SCREEN_ACTIVE) {
         if (input->event == BSP_BTN_LONG && input->btn == BSP_BTN_OK) {
-            smoking_model_finish(&s_model, now);
+            smoking_model_finish(&s_model, model_time_sec(now));
             s_count_wait_ok_release = true;
             beep(AUDIO_BEEP_DONE);
         }
@@ -452,39 +606,45 @@ static void process_input(const input_event_t *input)
         } else if (input->event == BSP_BTN_CLICK && input->btn == BSP_BTN_DOWN) {
             smoking_model_count_up(&s_model);
         } else if (input->event == BSP_BTN_CLICK && input->btn == BSP_BTN_OK) {
-            smoking_model_save_pending(&s_model, now);
+            smoking_model_save_pending(&s_model, model_time_sec(now));
             queue_save_if_dirty();
             beep(AUDIO_BEEP_DONE);
-        }
-    } else if (screen == SMOKING_SCREEN_SUDOKU) {
-        if (input->event == BSP_BTN_LONG && input->btn == BSP_BTN_OK) {
-            smoking_model_return_home(&s_model);
-        } else if (input->event == BSP_BTN_DOUBLE && input->btn == BSP_BTN_OK) {
-            smoking_model_sudoku_reset(&s_model);
-            queue_save_if_dirty();
-        } else if (input->event == BSP_BTN_CLICK && input->btn == BSP_BTN_OK) {
-            smoking_model_sudoku_click(&s_model);
-            queue_save_if_dirty();
-        } else if (input->event == BSP_BTN_CLICK && input->btn == BSP_BTN_UP) {
-            smoking_model_sudoku_up(&s_model);
-            queue_save_if_dirty();
-        } else if (input->event == BSP_BTN_CLICK && input->btn == BSP_BTN_DOWN) {
-            smoking_model_sudoku_down(&s_model);
-            queue_save_if_dirty();
         }
     } else if (screen == SMOKING_SCREEN_SETTINGS) {
         if (input->event == BSP_BTN_LONG && input->btn == BSP_BTN_OK) {
             if (s_model.editing_time) {
                 save_time_and_return_home();
+            } else if (!s_model.editing_goal &&
+                       s_model.selected_setting == SMOKING_SETTING_WIFI) {
+                clear_wifi_credentials();
+                beep(AUDIO_BEEP_DONE);
             } else {
                 smoking_model_return_home(&s_model);
+                queue_save_if_dirty();
             }
         } else if (input->event == BSP_BTN_CLICK && input->btn == BSP_BTN_OK) {
-            smoking_model_settings_click(&s_model);
+            if (!s_model.editing_time && !s_model.editing_goal &&
+                s_model.selected_setting == SMOKING_SETTING_WIFI) {
+                toggle_wifi_provisioning();
+            } else {
+                smoking_model_settings_click(&s_model);
+                queue_save_if_dirty();
+            }
         } else if (input->event == BSP_BTN_CLICK && input->btn == BSP_BTN_UP) {
             smoking_model_settings_up(&s_model);
+            queue_save_if_dirty();
         } else if (input->event == BSP_BTN_CLICK && input->btn == BSP_BTN_DOWN) {
             smoking_model_settings_down(&s_model);
+            queue_save_if_dirty();
+        }
+    } else if (screen == SMOKING_SCREEN_FOCUS) {
+        if (input->event == BSP_BTN_LONG && input->btn == BSP_BTN_OK) {
+            smoking_model_return_home(&s_model);
+        } else if (input->event == BSP_BTN_CLICK && input->btn == BSP_BTN_OK) {
+            smoking_model_focus_click(&s_model, now);
+        } else if (input->event == BSP_BTN_CLICK &&
+                   (input->btn == BSP_BTN_UP || input->btn == BSP_BTN_DOWN)) {
+            smoking_model_focus_toggle_mode(&s_model);
         }
     }
     request_render();
@@ -507,8 +667,16 @@ static void input_task(void *arg)
         }
         TickType_t tick_now = xTaskGetTickCount();
         if (tick_now - last_refresh >= pdMS_TO_TICKS(1000)) {
+            if (tools_wifi_take_time_synced()) {
+                save_clock_if_due(true);
+                tools_weather_request_refresh();
+            }
+            if (smoking_model_focus_tick(&s_model, now)) {
+                beep(AUDIO_BEEP_DONE);
+            }
             request_render();
             queue_save_if_dirty();
+            save_clock_if_due(false);
             last_refresh = tick_now;
         }
     }
@@ -554,6 +722,7 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
 void app_main(void)
 {
     ESP_LOGI(TAG, "AI Passport 小工具启动");
+    init_timezone();
     smoking_model_init(&s_model);
     s_cjk_font = smoking_font_18;
     s_cjk_font.fallback = &lv_font_montserrat_20;
@@ -592,11 +761,22 @@ void app_main(void)
             ESP_LOGW(TAG, "读取抽烟状态失败: %s", esp_err_to_name(load_err));
             s_model.storage_warning = true;
         }
+        restore_clock_if_available();
+        s_last_input_sec = now_sec();
         esp_err_t store_err = smoking_store_init(store_status, NULL);
         if (store_err != ESP_OK) {
             ESP_LOGW(TAG, "保存任务启动失败: %s", esp_err_to_name(store_err));
             s_model.storage_warning = true;
         }
+    }
+
+    esp_err_t wifi_err = tools_wifi_init();
+    if (wifi_err != ESP_OK) {
+        ESP_LOGW(TAG, "Wi-Fi 初始化失败: %s", esp_err_to_name(wifi_err));
+    }
+    esp_err_t weather_err = tools_weather_init();
+    if (weather_err != ESP_OK) {
+        ESP_LOGW(TAG, "天气任务启动失败: %s", esp_err_to_name(weather_err));
     }
 
     esp_err_t input_err = input_dispatch_init();

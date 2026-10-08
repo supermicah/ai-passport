@@ -135,11 +135,12 @@ Windows ESP-IDF terminal.
 
 ## Install ESP-IDF 5.5.3
 
-Use a location outside this repository and without spaces. The variable below
-is task-specific and can be overridden by the user:
+Use a location outside this repository and without spaces. For this checkout,
+keep ESP-IDF work under `/Users/bytedance/Server/Env/ESP` rather than `~/esp`.
+The variable below is task-specific and can be overridden by the user:
 
 ```bash
-export AI_PASSPORT_IDF_ROOT="${AI_PASSPORT_IDF_ROOT:-${HOME}/esp/esp-idf-v5.5.3}"
+export AI_PASSPORT_IDF_ROOT="${AI_PASSPORT_IDF_ROOT:-/Users/bytedance/Server/Env/ESP/esp-idf-v5.5.3}"
 ```
 
 ### International route
@@ -185,7 +186,7 @@ repositories themselves, so the checkout is identical to the GitHub clone.
 **Gitee mirror plus esp-gitee-tools (fallback).**
 
 ```bash
-export AI_PASSPORT_GITEE_TOOLS_ROOT="${AI_PASSPORT_GITEE_TOOLS_ROOT:-${HOME}/esp/esp-gitee-tools}"
+export AI_PASSPORT_GITEE_TOOLS_ROOT="${AI_PASSPORT_GITEE_TOOLS_ROOT:-/Users/bytedance/Server/Env/ESP/esp-gitee-tools}"
 mkdir -p "$(dirname "${AI_PASSPORT_IDF_ROOT}")"
 git clone --branch v5.5.3 \
     https://gitee.com/EspressifSystems/esp-idf.git \

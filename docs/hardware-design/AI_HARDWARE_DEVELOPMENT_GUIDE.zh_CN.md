@@ -319,11 +319,13 @@ WSL 可以用于编译，但烧录和串口监视需要将 USB 设备转发给 W
 
 ### 12.2 安装 ESP-IDF 5.5.3
 
-建议把 ESP-IDF 放在仓库之外，避免工具链文件被误提交。以下路径只是示例，可按本机目录调整：
+建议把 ESP-IDF 放在仓库之外，避免工具链文件被误提交。当前 checkout 的
+ESP-IDF 工作目录统一放在 `/Users/bytedance/Server/Env/ESP` 下，不使用
+`~/esp`：
 
 ```bash
-mkdir -p "$HOME/esp"
-cd "$HOME/esp"
+mkdir -p /Users/bytedance/Server/Env/ESP
+cd /Users/bytedance/Server/Env/ESP
 git clone --recursive --branch v5.5.3 \
     https://github.com/espressif/esp-idf.git esp-idf-v5.5.3
 cd esp-idf-v5.5.3
@@ -339,7 +341,7 @@ git submodule update --init --recursive
 每个新终端都需要激活该环境：
 
 ```bash
-source "$HOME/esp/esp-idf-v5.5.3/export.sh"
+source /Users/bytedance/Server/Env/ESP/esp-idf-v5.5.3/export.sh
 idf.py --version
 ```
 
