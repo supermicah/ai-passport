@@ -4,6 +4,7 @@
 #include "bsp_display.h"
 #include "bsp_i2c.h"
 #include "bsp_pins.h"
+#include "key_guard.h"
 #include "lvgl.h"
 #include "smoking_model.h"
 #include "smoking_store.h"
@@ -15,6 +16,7 @@
 #include "esp_log.h"
 #include "esp_sleep.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
@@ -87,6 +89,9 @@ static bool s_ignore_wake_tail;
 static int16_t s_beep_samples[BEEP_SAMPLES];
 static RTC_DATA_ATTR uint32_t s_deep_sleep_magic;
 static RTC_DATA_ATTR uint32_t s_deep_sleep_count;
+
+#define KEY_GUARD_MAX_US (10LL * 1000 * 1000)
+static key_guard_t s_key_guard;
 
 static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user);
 static void log_deep_sleep_warning(const char *step, esp_err_t err);
@@ -1112,9 +1117,33 @@ static esp_err_t input_dispatch_init(void)
     return ESP_OK;
 }
 
+static void input_dispatch_deinit(void) {
+    s_input_ready = false;
+    if (s_input_task) {
+        vTaskDelete(s_input_task);
+        s_input_task = NULL;
+    }
+    if (s_input_queue) {
+        vQueueDelete(s_input_queue);
+        s_input_queue = NULL;
+    }
+}
+
 static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
 {
     (void)user;
+    // Consume the guard before the readiness check: a release can arrive after the
+    // post-init voltage sample but before input dispatch is ready, and dropping it
+    // here would leave the guard armed to swallow the next real press.
+    const bool was_armed = s_key_guard.armed;
+    if (key_guard_consume(&s_key_guard, ev == BSP_BTN_RELEASE, esp_timer_get_time())) {
+        // The release and the deadline both arrive on this task; log the disarm
+        // transition once it happens.
+        if (was_armed && !s_key_guard.armed) {
+            ESP_LOGI(TAG, "唤醒键已松手,按键恢复响应");
+        }
+        return;
+    }
     if (!s_input_ready || !s_input_queue) return;
     const input_event_t input = { .btn = btn, .event = ev };
     (void)xQueueSend(s_input_queue, &input, 0);
@@ -1123,10 +1152,18 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
 void app_main(void)
 {
     ESP_LOGI(TAG, "AI Passport 小工具启动");
+    const uint32_t wake_causes = esp_sleep_get_wakeup_causes();
+    if (wake_causes & ~(1u << ESP_SLEEP_WAKEUP_UNDEFINED)) {
+        ESP_LOGI(TAG, "休眠唤醒原因位图: 0x%02x", (unsigned)wake_causes);
+    }
     if (s_deep_sleep_magic == DEEP_SLEEP_MAGIC) {
         ESP_LOGI(TAG, "deep sleep 唤醒: cause=%d count=%lu",
                  (int)esp_sleep_get_wakeup_cause(),
                  (unsigned long)s_deep_sleep_count);
+    }
+    if (wake_causes & (1u << ESP_SLEEP_WAKEUP_GPIO)) {
+        key_guard_arm(&s_key_guard, esp_timer_get_time(), KEY_GUARD_MAX_US);
+        ESP_LOGI(TAG, "按键唤醒:先屏蔽按键动作,直到那颗键松手");
     }
     init_timezone();
     smoking_model_init(&s_model);
@@ -1190,7 +1227,17 @@ void app_main(void)
     if (input_err != ESP_OK || button_err != ESP_OK) {
         ESP_LOGE(TAG, "按键初始化失败: input=%s button=%s",
                  esp_err_to_name(input_err), esp_err_to_name(button_err));
+        if (input_err == ESP_OK) {
+            input_dispatch_deinit();
+        }
     } else {
+        if (s_key_guard.armed) {
+            const bool released = bsp_button_read_mv() >= BSP_BTN_MV_RELEASED_MIN;
+            key_guard_sync_released(&s_key_guard, released);
+            if (!s_key_guard.armed) {
+                ESP_LOGI(TAG, "唤醒键在按键驱动启动前已松手,提前撤防");
+            }
+        }
         s_input_ready = true;
     }
 

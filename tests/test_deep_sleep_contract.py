@@ -125,8 +125,9 @@ class DeepSleepContractTest(unittest.TestCase):
         self.assertIn("button_cleanup()", body)
         self.assertIn("BSP_BTN_GPIO", body)
         self.assertIn("GPIO_MODE_INPUT", body)
-        self.assertIn("GPIO_PULLUP_ENABLE", body)
-        self.assertIn("gpio_get_level(BSP_BTN_GPIO)", body)
+        self.assertIn("GPIO_PULLUP_ONLY", body)
+        self.assertIn("vTaskDelay(pdMS_TO_TICKS(20))", body)
+        self.assertIn("gpio_get_level(pin)", body)
 
     def test_lcd_safe_levels_and_holds_are_configured(self) -> None:
         pins = initializer(self.display, "s_deep_sleep_pins")

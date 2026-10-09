@@ -42,6 +42,9 @@ run_static_checks() {
         tests/test_smoking_model.c main/smoking_model.c \
         -o "${test_dir}/test_smoking_model"
     "${test_dir}/test_smoking_model"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_key_guard.c -o "${test_dir}/test_key_guard"
+    "${test_dir}/test_key_guard"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Icomponents/bsp/src \
         tests/test_bsp_display_rounding.c components/bsp/src/bsp_display_rounding.c \
         -o "${test_dir}/test_bsp_display_rounding"
@@ -72,6 +75,7 @@ run_static_checks() {
         "${test_dir}/test_demo_${demo}_runtime"
     done
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_deep_sleep_contract.py
+    PYTHONDONTWRITEBYTECODE=1 python3 tests/test_key_wake_contract.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_tools_app_ui_contract.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_tools_app_storage_contract.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_tools_app_power_contract.py
