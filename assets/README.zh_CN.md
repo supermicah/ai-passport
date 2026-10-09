@@ -17,7 +17,7 @@
 
 | 文件 | 尺寸与格式 | 用途与来源 |
 | --- | --- | --- |
-| [`fonts/smoking_font_18.c`](fonts/smoking_font_18.c) | 18 px LVGL 位图字库源码，4 bpp，未压缩 | `main/` 中 fork 专用“小工具”应用的中文 UI 子集，包含抽烟、设置、Wi-Fi 配网/状态、杭州天气以及番茄钟文案。来源为 Noto Sans CJK SC Regular，由 Google/Adobe 以 SIL Open Font License 1.1 发布。应用中配置 Montserrat 20 作为数字、拉丁字符和 LVGL 符号的 fallback。生成使用 `lv_font_conv` 1.5.3，字符范围为应用固定中文标签字符，输出符号为 `smoking_font_18`。 |
+| [`fonts/smoking_font_18.c`](fonts/smoking_font_18.c) | 18 px LVGL 位图字库源码，4 bpp，未压缩 | `main/` 中 fork 专用“小工具”应用的中文 UI 子集，包含抽烟、设置、Wi-Fi 配网/状态、杭州天气、番茄钟以及收音机电台/播放状态文案。来源为 Noto Sans CJK SC Regular，由 Google/Adobe 以 SIL Open Font License 1.1 发布。应用中配置 Montserrat 20 作为数字、拉丁字符和 LVGL 符号的 fallback。生成使用 `NPM_CONFIG_CACHE=/private/tmp/npm-cache npx --yes lv_font_conv@1.5.3 --font /private/tmp/NotoSansCJKsc-Regular.otf --range 0x20-0x7E --symbols <fixed-tools-app-labels> --size 18 --bpp 4 --format lvgl --no-compress --lv-font-name smoking_font_18 --lv-include lvgl.h --output assets/fonts/smoking_font_18.c`，输出符号为 `smoking_font_18`。 |
 
 ## 图片（images）
 

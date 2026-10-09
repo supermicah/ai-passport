@@ -19,12 +19,14 @@ typedef enum {
     SMOKING_SCREEN_COUNT_SELECT,
     SMOKING_SCREEN_SETTINGS = 4,
     SMOKING_SCREEN_FOCUS,
+    SMOKING_SCREEN_RADIO,
 } smoking_screen_t;
 
 typedef enum {
     SMOKING_FEATURE_SMOKE = 0,
     SMOKING_FEATURE_FOCUS,
     SMOKING_FEATURE_SETTINGS,
+    SMOKING_FEATURE_RADIO,
     SMOKING_FEATURE_COUNT,
 } smoking_feature_t;
 
@@ -93,6 +95,7 @@ void smoking_model_init(smoking_model_t *model);
 void smoking_model_restore(smoking_model_t *model, const smoking_persist_state_t *state);
 smoking_persist_state_t smoking_model_persist_snapshot(const smoking_model_t *model);
 const char *smoking_feature_name(smoking_feature_t feature);
+bool smoking_model_active_session(const smoking_model_t *model);
 
 smoking_feature_t smoking_model_selected_feature(const smoking_model_t *model);
 void smoking_model_home_next(smoking_model_t *model);
@@ -128,3 +131,4 @@ void smoking_model_focus_toggle_mode(smoking_model_t *model);
 bool smoking_model_focus_tick(smoking_model_t *model, uint32_t now_sec);
 uint32_t smoking_model_focus_remaining(const smoking_model_t *model, uint32_t now_sec);
 const char *smoking_model_focus_mode_name(const smoking_model_t *model);
+void smoking_model_enter_radio(smoking_model_t *model);

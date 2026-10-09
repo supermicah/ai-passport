@@ -17,9 +17,12 @@ the [environment bootstrap](environment-setup.md) first.
 > Prefer `./tools/validate.sh --firmware` for firmware builds. Flash its
 > verified `build/FoloToy-AI-Passport-full.bin` at offset `0x0` for a blank
 > device or an intentional complete refresh. The merged image may reset NVS;
-> use segmented `idf.py flash` when existing NVS state must be preserved. Treat
-> `idf.py build` and `idf.py flash` as incremental development commands, not the
-> default delivery path.
+> the tools app's future user state belongs in the tail `tools_data` partition,
+> which normal merged-image updates preserve when no full-chip erase is used.
+> Do not treat records from before `tools_data` existed as data that must be
+> recovered. Use segmented `idf.py flash` when other existing NVS state must be
+> preserved. Treat `idf.py build` and `idf.py flash` as incremental development
+> commands, not the default delivery path.
 
 ```bash
 source <path-to-esp-idf-v5.5.3>/export.sh

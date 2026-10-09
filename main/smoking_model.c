@@ -5,6 +5,14 @@
 #define SECONDS_PER_DAY 86400u
 #define SMOKING_LEGACY_SCREEN_SUDOKU 3u
 #define SMOKING_LEGACY_FEATURE_SETTINGS 2u
+#define SMOKING_SLEEP_SESSION_MAGIC 0x31504C53u
+
+static const smoking_feature_t FEATURE_ORDER[] = {
+    SMOKING_FEATURE_SMOKE,
+    SMOKING_FEATURE_FOCUS,
+    SMOKING_FEATURE_RADIO,
+    SMOKING_FEATURE_SETTINGS,
+};
 
 static int32_t day_from_sec(uint32_t now_sec)
 {
@@ -16,13 +24,52 @@ static uint32_t sec_of_day(uint32_t now_sec)
     return now_sec % SECONDS_PER_DAY;
 }
 
+static uint32_t read_le32(const uint8_t *data)
+{
+    return (uint32_t)data[0] |
+           ((uint32_t)data[1] << 8) |
+           ((uint32_t)data[2] << 16) |
+           ((uint32_t)data[3] << 24);
+}
+
+static void write_le32(uint8_t *data, uint32_t value)
+{
+    data[0] = (uint8_t)value;
+    data[1] = (uint8_t)(value >> 8);
+    data[2] = (uint8_t)(value >> 16);
+    data[3] = (uint8_t)(value >> 24);
+}
+
+static bool load_sleep_session(const smoking_persist_state_t *state, uint32_t *started_at)
+{
+    if (read_le32(&state->reserved_game[0]) != SMOKING_SLEEP_SESSION_MAGIC) {
+        return false;
+    }
+    uint32_t value = read_le32(&state->reserved_game[4]);
+    if (!value) return false;
+    if (started_at) *started_at = value;
+    return true;
+}
+
+static void store_sleep_session(smoking_persist_state_t *state, uint32_t started_at)
+{
+    write_le32(&state->reserved_game[0], SMOKING_SLEEP_SESSION_MAGIC);
+    write_le32(&state->reserved_game[4], started_at);
+}
+
+static void clear_sleep_session(smoking_persist_state_t *state)
+{
+    memset(state->reserved_game, 0, sizeof(state->reserved_game));
+}
+
 static bool valid_screen(uint8_t screen)
 {
     return screen == SMOKING_SCREEN_HOME ||
            screen == SMOKING_SCREEN_ACTIVE ||
            screen == SMOKING_SCREEN_COUNT_SELECT ||
            screen == SMOKING_SCREEN_SETTINGS ||
-           screen == SMOKING_SCREEN_FOCUS;
+           screen == SMOKING_SCREEN_FOCUS ||
+           screen == SMOKING_SCREEN_RADIO;
 }
 
 static uint16_t valid_daily_goal(uint16_t goal)
@@ -40,6 +87,14 @@ static void sanitize_selected_feature(uint8_t *feature)
     } else if (*feature >= SMOKING_FEATURE_COUNT) {
         *feature = SMOKING_FEATURE_SMOKE;
     }
+}
+
+static size_t feature_order_index(smoking_feature_t feature)
+{
+    for (size_t i = 0; i < sizeof(FEATURE_ORDER) / sizeof(FEATURE_ORDER[0]); i++) {
+        if (FEATURE_ORDER[i] == feature) return i;
+    }
+    return 0;
 }
 
 void smoking_model_init(smoking_model_t *model)
@@ -60,9 +115,12 @@ void smoking_model_restore(smoking_model_t *model, const smoking_persist_state_t
     if (!state || state->version != SMOKING_MODEL_VERSION) return;
 
     model->persisted = *state;
+    uint32_t restored_start = 0;
+    bool restore_active = model->persisted.screen == SMOKING_SCREEN_ACTIVE &&
+                          load_sleep_session(&model->persisted, &restored_start);
     if (!valid_screen(model->persisted.screen) ||
-        model->persisted.screen == SMOKING_SCREEN_ACTIVE ||
         model->persisted.screen == SMOKING_SCREEN_COUNT_SELECT ||
+        (model->persisted.screen == SMOKING_SCREEN_ACTIVE && !restore_active) ||
         model->persisted.screen == SMOKING_LEGACY_SCREEN_SUDOKU) {
         model->persisted.screen = SMOKING_SCREEN_HOME;
     }
@@ -78,7 +136,7 @@ void smoking_model_restore(smoking_model_t *model, const smoking_persist_state_t
         model->persisted.last.duration_sec > SECONDS_PER_DAY) {
         memset(&model->persisted.last, 0, sizeof(model->persisted.last));
     }
-    model->smoking_started_at = 0;
+    model->smoking_started_at = restore_active ? restored_start : 0;
     model->pending_duration_sec = 0;
     model->pending_cigarettes = 1;
     model->editing_goal = false;
@@ -94,7 +152,12 @@ smoking_persist_state_t smoking_model_persist_snapshot(const smoking_model_t *mo
     smoking_persist_state_t state = model->persisted;
     state.version = SMOKING_MODEL_VERSION;
     state.daily_goal = valid_daily_goal(state.daily_goal);
-    state.screen = SMOKING_SCREEN_HOME;
+    if (model->persisted.screen == SMOKING_SCREEN_ACTIVE && model->smoking_started_at) {
+        store_sleep_session(&state, model->smoking_started_at);
+    } else {
+        state.screen = SMOKING_SCREEN_HOME;
+        clear_sleep_session(&state);
+    }
     sanitize_selected_feature(&state.selected_feature);
     return state;
 }
@@ -102,7 +165,7 @@ smoking_persist_state_t smoking_model_persist_snapshot(const smoking_model_t *mo
 const char *smoking_feature_name(smoking_feature_t feature)
 {
     static const char *NAMES[] = {
-        "抽烟", "专注", "设置",
+        "抽烟", "专注", "设置", "收音机",
     };
     return feature < SMOKING_FEATURE_COUNT ? NAMES[feature] : "";
 }
@@ -112,17 +175,25 @@ smoking_feature_t smoking_model_selected_feature(const smoking_model_t *model)
     return (smoking_feature_t)model->persisted.selected_feature;
 }
 
+bool smoking_model_active_session(const smoking_model_t *model)
+{
+    return model->persisted.screen == SMOKING_SCREEN_ACTIVE &&
+           model->smoking_started_at > 0;
+}
+
 void smoking_model_home_next(smoking_model_t *model)
 {
-    model->persisted.selected_feature =
-        (uint8_t)((model->persisted.selected_feature + 1u) % SMOKING_FEATURE_COUNT);
+    size_t count = sizeof(FEATURE_ORDER) / sizeof(FEATURE_ORDER[0]);
+    size_t index = feature_order_index((smoking_feature_t)model->persisted.selected_feature);
+    model->persisted.selected_feature = (uint8_t)FEATURE_ORDER[(index + 1u) % count];
 }
 
 void smoking_model_home_prev(smoking_model_t *model)
 {
+    size_t count = sizeof(FEATURE_ORDER) / sizeof(FEATURE_ORDER[0]);
+    size_t index = feature_order_index((smoking_feature_t)model->persisted.selected_feature);
     model->persisted.selected_feature =
-        (uint8_t)((model->persisted.selected_feature + SMOKING_FEATURE_COUNT - 1u) %
-                  SMOKING_FEATURE_COUNT);
+        (uint8_t)FEATURE_ORDER[(index + count - 1u) % count];
 }
 
 void smoking_model_enter_selected(smoking_model_t *model, uint32_t now_sec)
@@ -136,6 +207,9 @@ void smoking_model_enter_selected(smoking_model_t *model, uint32_t now_sec)
         break;
     case SMOKING_FEATURE_SETTINGS:
         smoking_model_enter_time_settings(model, now_sec);
+        break;
+    case SMOKING_FEATURE_RADIO:
+        smoking_model_enter_radio(model);
         break;
     default:
         model->persisted.selected_feature = SMOKING_FEATURE_SMOKE;
@@ -172,6 +246,7 @@ void smoking_model_start(smoking_model_t *model, uint32_t now_sec)
     model->smoking_started_at = now_sec;
     model->pending_duration_sec = 0;
     model->pending_cigarettes = 1;
+    model->dirty = true;
 }
 
 void smoking_model_finish(smoking_model_t *model, uint32_t now_sec)
@@ -183,6 +258,7 @@ void smoking_model_finish(smoking_model_t *model, uint32_t now_sec)
     model->pending_duration_sec = duration;
     model->pending_cigarettes = 1;
     model->persisted.screen = SMOKING_SCREEN_COUNT_SELECT;
+    model->dirty = true;
 }
 
 void smoking_model_count_up(smoking_model_t *model)
@@ -229,6 +305,7 @@ void smoking_model_save_pending(smoking_model_t *model, uint32_t now_sec)
     model->persisted.last.duration_sec = duration;
     model->persisted.last.cigarettes = cigarettes;
     model->persisted.last.valid = 1;
+    clear_sleep_session(&model->persisted);
     model->persisted.completed_count++;
     model->dirty = true;
     smoking_model_return_home(model);
@@ -339,6 +416,7 @@ bool smoking_model_idle_backlight_allowed(const smoking_model_t *model)
     case SMOKING_SCREEN_COUNT_SELECT:
     case SMOKING_SCREEN_SETTINGS:
     case SMOKING_SCREEN_FOCUS:
+    case SMOKING_SCREEN_RADIO:
         return true;
     default:
         return false;
@@ -506,4 +584,9 @@ bool smoking_model_focus_tick(smoking_model_t *model, uint32_t now_sec)
 const char *smoking_model_focus_mode_name(const smoking_model_t *model)
 {
     return model->focus_mode == SMOKING_FOCUS_BREAK ? "休息" : "专注";
+}
+
+void smoking_model_enter_radio(smoking_model_t *model)
+{
+    model->persisted.screen = SMOKING_SCREEN_RADIO;
 }

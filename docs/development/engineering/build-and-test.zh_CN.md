@@ -14,9 +14,10 @@
 
 > 固件编译优先运行 `./tools/validate.sh --firmware`。空白设备初始化或有意完整
 > 刷新时，把验证通过的 `build/FoloToy-AI-Passport-full.bin` 从 `0x0` 写入；
-> 合并镜像可能重置 NVS，需要保留已有 NVS 状态时使用分段 `idf.py flash`。
-> `idf.py build` 和
-> `idf.py flash` 只作为增量开发命令，不作为默认交付方式。
+> 合并镜像可能重置 NVS；小工具后续用户状态统一放在尾部 `tools_data` 分区，
+> 不执行全片擦除时，常规合并镜像更新会保留它。`tools_data` 存在之前的记录
+> 不作为必须恢复的数据。需要保留其它已有 NVS 状态时使用分段 `idf.py flash`。
+> `idf.py build` 和 `idf.py flash` 只作为增量开发命令，不作为默认交付方式。
 
 ```bash
 source <ESP-IDF-v5.5.3-路径>/export.sh

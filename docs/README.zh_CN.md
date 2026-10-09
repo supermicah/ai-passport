@@ -137,7 +137,7 @@ git switch -c feature/my-passport-app
 
 **ESP32-C3 · 8 MB Flash · 无 PSRAM · 240 × 320 屏幕 · 三个实体按键**
 
-默认分区仅包含 **NVS、PHY data 和占用剩余 Flash 的单个 factory 应用**。
+默认分区包含 **NVS、PHY data、单个 factory 应用，以及用于小工具用户状态的尾部 NVS 分区**。
 用户固件可按需调整为其他合法的 8 MB 布局，详见[固件布局](development/engineering/firmware-layout.zh_CN.md)。
 
 <details>
@@ -184,7 +184,7 @@ tools/                   本地与 CI 共用的验证及固件校验脚本
 docs/                    项目说明、变更记录、工程/协作规范与设计参考
 .github/                 GitHub 社区文档、PR 模板、Issue Form 与 CI 工作流
 sdkconfig.defaults       ESP32-C3、USB console、Flash、LVGL 默认配置
-partitions.csv           最简默认分区：NVS、PHY data 和单个 factory 应用
+partitions.csv           默认分区：NVS、PHY data、factory 应用和小工具数据
 dependencies.lock        可复现的 ESP-IDF Managed Component 解析结果
 AGENTS.md                AI agent 必读入口（与 AGENTS.zh_CN.md 配对）
 CLAUDE.md                Claude Code 指向 AGENTS.md 的入口（含中文配对）

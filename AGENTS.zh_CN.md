@@ -25,9 +25,11 @@
 ## 项目与安全基线
 
 - 目标平台：ESP32-C3、8 MB Flash、无 PSRAM、ESP-IDF 5.5.3。
-- 仓库默认分区表保持最简：只包含 NVS、PHY data，以及占用 8 MB Flash
-  剩余空间的单个 factory app。用户固件可以按需求明确调整布局；修改后必须
-  验证结果，不得把产品专用分区变成模板的强制契约。
+- 仓库默认分区表按当前小工具保持最简：默认 NVS、PHY data、单个 factory app，
+  以及尾部用于小工具用户状态的 `tools_data` NVS 分区。后续小工具持久化必须
+  使用 `tools_data`；不要求迁移或恢复该分区存在之前写入的历史记录。用户固件
+  可以按需求明确调整布局；修改后必须验证结果，不得把无关产品专用分区变成
+  模板的强制契约。
 - 保留用户已有修改。先执行 `git status --short --branch`，不得覆盖或清理无关文件。
 - 下载（烧录）新固件无需备份设备内原有固件，不得把读取 Flash 备份作为前置条件。这不保证保留用户数据，也不授权全片擦除；遵循[烧录与数据说明](docs/development/engineering/firmware-layout.zh_CN.md#烧录与已存数据)。
 - 硬件事实优先级：产品规格与实测结果 → `components/bsp/include/bsp_pins.h` → BSP 头文件与实现 → 硬件指南 → README/demo。任务所需硬件细节未在这些来源中定义时，直接询问用户，不得猜测。

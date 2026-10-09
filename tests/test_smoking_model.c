@@ -111,6 +111,26 @@ static void test_restore_sanitizes_runtime_and_version(void)
     assert(model.persisted.selected_feature == SMOKING_FEATURE_SETTINGS);
 }
 
+static void test_active_session_persists_for_low_power_sleep(void)
+{
+    smoking_model_t model;
+    smoking_model_init(&model);
+
+    smoking_model_start(&model, DAY(20) + 1234);
+    assert(smoking_model_active_session(&model));
+    smoking_persist_state_t snapshot = smoking_model_persist_snapshot(&model);
+    assert(snapshot.screen == SMOKING_SCREEN_ACTIVE);
+
+    smoking_model_t restored;
+    smoking_model_restore(&restored, &snapshot);
+    assert(restored.persisted.screen == SMOKING_SCREEN_ACTIVE);
+    assert(restored.smoking_started_at == DAY(20) + 1234);
+    assert(smoking_model_active_session(&restored));
+
+    smoking_model_finish(&restored, DAY(20) + 1300);
+    assert(restored.pending_duration_sec == 66);
+}
+
 static void test_idle_policy_and_feature_cycle(void)
 {
     smoking_model_t model;
@@ -122,6 +142,8 @@ static void test_idle_policy_and_feature_cycle(void)
     assert(smoking_model_selected_feature(&model) == SMOKING_FEATURE_SMOKE);
     smoking_model_home_next(&model);
     assert(smoking_model_selected_feature(&model) == SMOKING_FEATURE_FOCUS);
+    smoking_model_home_next(&model);
+    assert(smoking_model_selected_feature(&model) == SMOKING_FEATURE_RADIO);
     smoking_model_home_next(&model);
     assert(smoking_model_selected_feature(&model) == SMOKING_FEATURE_SETTINGS);
     smoking_model_home_next(&model);
@@ -144,6 +166,14 @@ static void test_idle_policy_and_feature_cycle(void)
     smoking_model_enter_selected(&model, 10);
     assert(model.persisted.screen == SMOKING_SCREEN_FOCUS);
     assert(smoking_model_idle_backlight_allowed(&model));
+
+    smoking_model_return_home(&model);
+    model.persisted.selected_feature = SMOKING_FEATURE_RADIO;
+    smoking_model_enter_selected(&model, 10);
+    assert(model.persisted.screen == SMOKING_SCREEN_RADIO);
+    assert(smoking_model_idle_backlight_allowed(&model));
+    smoking_model_return_home(&model);
+    assert(model.persisted.screen == SMOKING_SCREEN_HOME);
 }
 
 static void test_settings_menu_and_time_edit(void)
@@ -257,6 +287,7 @@ int main(void)
     test_stats_and_interval();
     test_history_replaces_oldest();
     test_restore_sanitizes_runtime_and_version();
+    test_active_session_persists_for_low_power_sleep();
     test_idle_policy_and_feature_cycle();
     test_settings_menu_and_time_edit();
     test_goal_settings_and_streaks();

@@ -17,6 +17,8 @@
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "services/gap/ble_svc_gap.h"
+#include "nvs.h"
+#include "tools_storage.h"
 #include "tools_wifi_security.h"
 
 #include <string.h>
@@ -26,6 +28,9 @@ static const char *TAG = "tools_wifi";
 
 #define BLUFI_AP_LIST_COUNT 16
 #define TOOLS_WIFI_SNTP_SERVER "ntp.aliyun.com"
+#define WIFI_STORE_NAMESPACE "wifi"
+#define WIFI_STORE_KEY "sta"
+#define WIFI_STORE_MAGIC 0x54574649u
 
 static esp_netif_t *s_sta_netif;
 static esp_event_handler_instance_t s_wifi_handler;
@@ -52,10 +57,76 @@ static volatile bool s_time_synced;
 static volatile bool s_time_sync_pending;
 static SemaphoreHandle_t s_host_stopped;
 
+typedef struct {
+    uint32_t magic;
+    uint32_t size;
+    wifi_config_t config;
+} tools_wifi_store_blob_t;
+
 static void copy_ssid(char out[33])
 {
     memcpy(out, s_sta_config.sta.ssid, 32);
     out[32] = '\0';
+}
+
+static esp_err_t save_credentials_to_tools_data(void)
+{
+    if (s_sta_config.sta.ssid[0] == '\0') return ESP_OK;
+
+    nvs_handle_t handle = 0;
+    esp_err_t err = nvs_open_from_partition(TOOLS_STORAGE_PARTITION,
+                                            WIFI_STORE_NAMESPACE,
+                                            NVS_READWRITE, &handle);
+    if (err != ESP_OK) return err;
+
+    tools_wifi_store_blob_t blob = {
+        .magic = WIFI_STORE_MAGIC,
+        .size = sizeof(wifi_config_t),
+        .config = s_sta_config,
+    };
+    err = nvs_set_blob(handle, WIFI_STORE_KEY, &blob, sizeof(blob));
+    if (err == ESP_OK) err = nvs_commit(handle);
+    nvs_close(handle);
+    return err;
+}
+
+static esp_err_t clear_tools_data_credentials(void)
+{
+    nvs_handle_t handle = 0;
+    esp_err_t err = nvs_open_from_partition(TOOLS_STORAGE_PARTITION,
+                                            WIFI_STORE_NAMESPACE,
+                                            NVS_READWRITE, &handle);
+    if (err == ESP_ERR_NVS_NOT_FOUND) return ESP_OK;
+    if (err != ESP_OK) return err;
+
+    err = nvs_erase_key(handle, WIFI_STORE_KEY);
+    if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+    if (err == ESP_OK) err = nvs_commit(handle);
+    nvs_close(handle);
+    return err;
+}
+
+static bool load_tools_data_credentials(wifi_config_t *config)
+{
+    nvs_handle_t handle = 0;
+    esp_err_t err = nvs_open_from_partition(TOOLS_STORAGE_PARTITION,
+                                            WIFI_STORE_NAMESPACE,
+                                            NVS_READONLY, &handle);
+    if (err != ESP_OK) return false;
+
+    tools_wifi_store_blob_t blob;
+    size_t size = sizeof(blob);
+    err = nvs_get_blob(handle, WIFI_STORE_KEY, &blob, &size);
+    nvs_close(handle);
+    if (err != ESP_OK || size != sizeof(blob) ||
+        blob.magic != WIFI_STORE_MAGIC ||
+        blob.size != sizeof(wifi_config_t) ||
+        blob.config.sta.ssid[0] == '\0') {
+        return false;
+    }
+
+    *config = blob.config;
+    return true;
 }
 
 static void set_state_for_idle(void)
@@ -131,6 +202,15 @@ static void request_wifi_connect(void)
     if (!s_wifi_started || s_sta_config.sta.ssid[0] == '\0') {
         set_state_for_idle();
         return;
+    }
+
+    s_sta_config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+    s_sta_config.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+    s_sta_config.sta.failure_retry_cnt = 3;
+    esp_wifi_set_config(WIFI_IF_STA, &s_sta_config);
+    esp_err_t save_err = save_credentials_to_tools_data();
+    if (save_err != ESP_OK) {
+        ESP_LOGW(TAG, "保存 Wi-Fi 配置失败: %s", esp_err_to_name(save_err));
     }
 
     bool was_connected = s_wifi_got_ip;
@@ -254,6 +334,7 @@ static void blufi_event(esp_blufi_cb_event_t event, esp_blufi_cb_param_t *param)
         memcpy(s_sta_config.sta.bssid, param->sta_bssid.bssid, 6);
         s_sta_config.sta.bssid_set = true;
         esp_wifi_set_config(WIFI_IF_STA, &s_sta_config);
+        save_credentials_to_tools_data();
         break;
     case ESP_BLUFI_EVENT_RECV_STA_SSID:
         if (param->sta_ssid.ssid_len >= sizeof(s_sta_config.sta.ssid)) {
@@ -268,6 +349,7 @@ static void blufi_event(esp_blufi_cb_event_t event, esp_blufi_cb_param_t *param)
         memcpy(s_sta_config.sta.ssid, param->sta_ssid.ssid,
                param->sta_ssid.ssid_len);
         esp_wifi_set_config(WIFI_IF_STA, &s_sta_config);
+        save_credentials_to_tools_data();
         break;
     case ESP_BLUFI_EVENT_RECV_STA_PASSWD:
         if (param->sta_passwd.passwd_len >= sizeof(s_sta_config.sta.password)) {
@@ -278,6 +360,7 @@ static void blufi_event(esp_blufi_cb_event_t event, esp_blufi_cb_param_t *param)
         memcpy(s_sta_config.sta.password, param->sta_passwd.passwd,
                param->sta_passwd.passwd_len);
         esp_wifi_set_config(WIFI_IF_STA, &s_sta_config);
+        save_credentials_to_tools_data();
         break;
     case ESP_BLUFI_EVENT_REQ_CONNECT_TO_AP:
         request_wifi_connect();
@@ -352,6 +435,11 @@ static esp_err_t wifi_start(void)
     if (err == ESP_OK) {
         s_wifi_started = true;
         esp_wifi_get_config(WIFI_IF_STA, &s_sta_config);
+        if (s_sta_config.sta.ssid[0] == '\0' &&
+            load_tools_data_credentials(&s_sta_config)) {
+            ESP_LOGI(TAG, "Wi-Fi credentials restored from tools_data");
+            esp_wifi_set_config(WIFI_IF_STA, &s_sta_config);
+        }
         set_state_for_idle();
     }
     return err;
@@ -508,6 +596,10 @@ esp_err_t tools_wifi_clear_credentials(void)
     s_reconnect_after_disconnect = false;
     if (s_wifi_started) esp_wifi_disconnect();
     if (err == ESP_OK) err = esp_wifi_set_config(WIFI_IF_STA, &empty);
+    esp_err_t clear_err = clear_tools_data_credentials();
+    if (clear_err != ESP_OK) {
+        ESP_LOGW(TAG, "清除小工具 Wi-Fi 配置失败: %s", esp_err_to_name(clear_err));
+    }
     memset(&s_sta_config, 0, sizeof(s_sta_config));
     s_wifi_connecting = false;
     s_wifi_got_ip = false;

@@ -6,7 +6,9 @@
 
 This repository is a minimal base for user-defined firmware targeting an
 ESP32-C3 with 8 MB Flash. Its default does not reserve product-specific
-identity, OTA, or unused data partitions.
+identity or OTA partitions. The tools application keeps its user state in a
+small tail NVS partition so ordinary merged-image development flashes do not
+rewrite those records.
 
 ## Default layout
 
@@ -16,7 +18,8 @@ The default partition table contains exactly:
 | --- | --- | ---: | ---: | --- |
 | `nvs` | data/NVS | `0x9000` | `0x6000` | ESP-IDF and application key-value storage |
 | `phy_init` | data/PHY | `0xF000` | `0x1000` | PHY initialization data |
-| `factory` | app/factory | `0x10000` | `0x7F0000` | The single application image; all remaining Flash |
+| `factory` | app/factory | `0x10000` | `0x7E0000` | The single application image |
+| `tools_data` | data/NVS | `0x7F0000` | `0x10000` | Tools-app records, Wi-Fi credentials, radio preferences, and offline clock |
 
 The default has no OTA slots. This is a starting point, not a restriction on
 user firmware.
@@ -70,11 +73,22 @@ using a method supported by that application. Not requiring an original-firmware
 backup does not guarantee data preservation or authorize a full-chip erase.
 
 The verified merged image is written from `0x0`. Because the merged file pads
-the gaps between images, flashing it can reset the NVS and PHY data regions.
-Use the merged image for blank-device provisioning or an intentional complete
-refresh. During normal development, use segmented `idf.py flash` when existing
-NVS state should be preserved; this also requires a compatible partition layout
-and flash targets that do not overwrite those data regions. `idf.py erase-flash`
-erases all user data. Do not add it as a routine prerequisite: use it only when
-a complete erase is explicitly intended and any data that must be kept has
-been saved.
+the gaps between images, flashing it can reset the default NVS and PHY data
+regions. The current tools-app merged image does not include an image for the
+tail `tools_data` partition, so normal merged-image updates preserve that
+partition as long as the partition table remains compatible and no full-chip
+erase is performed.
+
+For the tools app, all future user-facing persistence belongs in `tools_data`:
+smoking records and goals, the offline clock, Wi-Fi credentials, and radio
+preferences. Data written before this partition existed is not a compatibility
+requirement; do not add legacy migration or recovery work unless a user
+explicitly asks for it. New features that need persistent user state must add
+their keys under this partition and keep the storage contract test updated.
+
+During normal development, use segmented `idf.py flash` when other existing NVS
+state should be preserved; this also requires a compatible partition layout and
+flash targets that do not overwrite those data regions. `idf.py erase-flash`
+erases all user data, including `tools_data`. Do not add it as a routine
+prerequisite: use it only when a complete erase is explicitly intended and any
+data that must be kept has been saved.
