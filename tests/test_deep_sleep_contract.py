@@ -112,6 +112,23 @@ class DeepSleepContractTest(unittest.TestCase):
         self.assertIn("cw_read(CW_REG_CONFIG, &actual, 1)", body)
         self.assertIn("actual == CW_CONFIG_SLEEP", body)
 
+    def test_cw2017_zero_soc_is_rejected_when_voltage_is_plausible(self) -> None:
+        self.assertIn("#define CW_ZERO_SOC_VALID_MAX_MV 3300", self.battery)
+        self.assertIn("#define CW_ZERO_SOC_STABLE_READS 2", self.battery)
+        self.assertIn("static int s_last_usable_soc = -1;", self.battery)
+        self.assertIn("static bool cw_soc_is_usable", self.battery)
+        self.assertIn("static int cw_filter_soc", self.battery)
+        self.assertIn("soc > 0 || mv < 0 || mv <= CW_ZERO_SOC_VALID_MAX_MV",
+                      self.battery)
+        filter_body = function_body(self.battery, "cw_filter_soc")
+        self.assertIn("s_last_usable_soc = soc", filter_body)
+        self.assertIn("s_zero_soc_reads >= CW_ZERO_SOC_STABLE_READS", filter_body)
+        self.assertIn("mv < 0 || mv > CW_ZERO_SOC_VALID_MAX_MV", filter_body)
+        body = function_body(self.battery, "bsp_battery_soc")
+        self.assertIn("cw_read_voltage_mv(&mv)", body)
+        self.assertIn("cw_soc_is_usable", body)
+        self.assertIn("cw_filter_soc", body)
+
     def test_shared_i2c_is_released_after_device_transactions(self) -> None:
         body = function_body(self.i2c, "bsp_i2c_prepare_deep_sleep")
         self.assertIn("BSP_I2C_SDA", body)
@@ -185,6 +202,26 @@ class DeepSleepContractTest(unittest.TestCase):
         self.assertIn("1ULL << BSP_BTN_GPIO", body)
         self.assertIn("ESP_GPIO_WAKEUP_GPIO_LOW", body)
         self.assertIn("button_level == 0", body)
+
+    def test_tools_app_deep_sleep_restores_elapsed_offline_time(self) -> None:
+        self.assertIn("#include \"esp_rtc_time.h\"", self.main)
+        self.assertIn("CLOCK_DEEP_SLEEP_ELAPSED_MAX_SEC", self.main)
+        self.assertIn("CLOCK_BOOTSTRAP_UNIX_SEC", self.main)
+        self.assertIn("CLOCK_BOOTSTRAP_FUTURE_TOLERANCE_SEC", self.main)
+        self.assertIn("RTC_DATA_ATTR uint32_t s_deep_sleep_clock_sec", self.main)
+        self.assertIn("RTC_DATA_ATTR uint64_t s_deep_sleep_rtc_us", self.main)
+        restore = function_body(self.main, "restore_clock_if_available")
+        self.assertIn("loaded ? saved : CLOCK_BOOTSTRAP_UNIX_SEC", restore)
+        self.assertIn("saved > CLOCK_BOOTSTRAP_UNIX_SEC + CLOCK_BOOTSTRAP_FUTURE_TOLERANCE_SEC",
+                      restore)
+        self.assertIn("esp_rtc_get_time_us()", restore)
+        self.assertIn("rtc_now > s_deep_sleep_rtc_us", restore)
+        self.assertIn("s_deep_sleep_clock_sec + elapsed", restore)
+        self.assertIn("smoking_store_save_clock(restored)", restore)
+        sleep = function_body(self.main, "enter_idle_deep_sleep")
+        self.assertIn("uint32_t sleep_clock = now_sec()", sleep)
+        self.assertIn("s_deep_sleep_clock_sec = sleep_clock", sleep)
+        self.assertIn("s_deep_sleep_rtc_us = esp_rtc_get_time_us()", sleep)
 
 
 if __name__ == "__main__":

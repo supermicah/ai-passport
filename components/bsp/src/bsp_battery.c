@@ -7,6 +7,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <stdbool.h>
+#include <stdint.h>
 
 static const char *TAG = "bsp_batt";
 
@@ -22,6 +23,8 @@ static const char *TAG = "bsp_batt";
 #define CW_CONFIG_SLEEP   0xF0
 #define CW_UPDATE_FLAG    0x80
 #define CW_PROFILE_SIZE   80
+#define CW_ZERO_SOC_VALID_MAX_MV 3300
+#define CW_ZERO_SOC_STABLE_READS 2
 
 static const uint8_t s_battery_profile[CW_PROFILE_SIZE] = {
     0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -40,6 +43,8 @@ _Static_assert(sizeof(s_battery_profile) == CW_PROFILE_SIZE,
                "CW2017 battery profile must contain exactly 80 bytes");
 
 static i2c_master_dev_handle_t s_dev;
+static int s_last_usable_soc = -1;
+static uint8_t s_zero_soc_reads;
 
 static esp_err_t cw_read(uint8_t reg, uint8_t *buf, size_t n) {
     if (!s_dev) return ESP_ERR_INVALID_STATE;
@@ -50,6 +55,39 @@ static esp_err_t cw_write(uint8_t reg, uint8_t val) {
     if (!s_dev) return ESP_ERR_INVALID_STATE;
     uint8_t b[2] = { reg, val };
     return i2c_master_transmit(s_dev, b, 2, 100);
+}
+
+static esp_err_t cw_read_voltage_mv(int *mv) {
+    uint8_t b[2] = { 0 };
+    esp_err_t err = cw_read(CW_REG_VCELL_H, b, 2);
+    if (err != ESP_OK) return err;
+    uint32_t raw = ((uint32_t)b[0] << 8 | b[1]) & 0x3FFF;
+    *mv = (int)((raw * 3125) / 10000);
+    return ESP_OK;
+}
+
+static bool cw_soc_is_usable(uint8_t soc, int mv) {
+    if (soc > 100) return false;
+    return soc > 0 || mv < 0 || mv <= CW_ZERO_SOC_VALID_MAX_MV;
+}
+
+static int cw_filter_soc(uint8_t soc, int mv) {
+    if (soc > 100) return -1;
+    if (soc > 0) {
+        s_last_usable_soc = soc;
+        s_zero_soc_reads = 0;
+        return soc;
+    }
+    if (mv < 0 || mv > CW_ZERO_SOC_VALID_MAX_MV) {
+        return s_last_usable_soc;
+    }
+
+    if (s_zero_soc_reads < UINT8_MAX) s_zero_soc_reads++;
+    if (s_zero_soc_reads >= CW_ZERO_SOC_STABLE_READS) {
+        s_last_usable_soc = 0;
+        return 0;
+    }
+    return s_last_usable_soc;
 }
 
 // CONFIG 的低 4 bit 为保留位。复位、睡眠和激活均按芯片规定的时序切换。
@@ -116,8 +154,11 @@ static int cw_update_profile(void) {
 static int cw_wait_soc_ready(void) {
     for (int retry = 0; retry < 50; retry++) {
         uint8_t soc = 0;
+        int mv = -1;
         vTaskDelay(pdMS_TO_TICKS(100));
-        if (cw_read(CW_REG_SOC_H, &soc, 1) == 0 && soc <= 100) return 0;
+        esp_err_t soc_err = cw_read(CW_REG_SOC_H, &soc, 1);
+        (void)cw_read_voltage_mv(&mv);
+        if (soc_err == ESP_OK && cw_filter_soc(soc, mv) >= 0) return 0;
     }
     return -1;
 }
@@ -215,14 +256,15 @@ esp_err_t bsp_battery_sleep(void) {
 int bsp_battery_soc(void) {
     uint8_t b[2] = { 0 };
     if (cw_read(CW_REG_SOC_H, b, 2) != 0) return -1;
+    int mv = -1;
+    (void)cw_read_voltage_mv(&mv);
     int soc = b[0];                       // 高字节即整数百分比
-    if (soc > 100) return -1;             // 芯片未就绪时可能读到 0xFF
-    return soc;
+    if (!cw_soc_is_usable((uint8_t)soc, mv) && s_last_usable_soc < 0) return -1;
+    return cw_filter_soc((uint8_t)soc, mv);
 }
 
 int bsp_battery_mv(void) {
-    uint8_t b[2] = { 0 };
-    if (cw_read(CW_REG_VCELL_H, b, 2) != 0) return -1;
-    uint32_t raw = ((uint32_t)b[0] << 8 | b[1]) & 0x3FFF;   // 14bit
-    return (int)((raw * 3125) / 10000);                     // raw * 312.5uV → mV
+    int mv = -1;
+    if (cw_read_voltage_mv(&mv) != ESP_OK) return -1;
+    return mv;                         // raw * 312.5uV → mV
 }

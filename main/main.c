@@ -14,6 +14,7 @@
 
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_rtc_time.h"
 #include "esp_sleep.h"
 #include "esp_system.h"
 #include "esp_timer.h"
@@ -43,8 +44,11 @@ static const char *TAG = "tools_app";
 #define AUDIO_HZ 16000u
 #define BEEP_SAMPLES 960u
 #define CLOCK_SAVE_INTERVAL_SEC (5u * 60u)
+#define CLOCK_DEEP_SLEEP_ELAPSED_MAX_SEC (30u * 24u * 60u * 60u)
+#define CLOCK_BOOTSTRAP_UNIX_SEC 1791788711u
+#define CLOCK_BOOTSTRAP_FUTURE_TOLERANCE_SEC 120u
 #define POWER_LOG_INTERVAL_SEC (5u * 60u)
-#define BACKLIGHT_NORMAL_PERCENT 50u
+#define BACKLIGHT_NORMAL_PERCENT 35u
 #define BACKLIGHT_RADIO_PERCENT 45u
 #define BACKLIGHT_SMOKING_PERCENT 25u
 #define BACKLIGHT_SMOKING_DIM_PERCENT 8u
@@ -78,6 +82,7 @@ static bool s_audio_ok;
 static bool s_backlight_on = true;
 static bool s_entering_deep_sleep;
 static bool s_clock_persistence_enabled;
+static bool s_manual_screen_off;
 static uint32_t s_last_input_sec;
 static uint32_t s_last_clock_save_sec;
 static uint32_t s_last_power_log_sec;
@@ -89,6 +94,8 @@ static bool s_ignore_wake_tail;
 static int16_t s_beep_samples[BEEP_SAMPLES];
 static RTC_DATA_ATTR uint32_t s_deep_sleep_magic;
 static RTC_DATA_ATTR uint32_t s_deep_sleep_count;
+static RTC_DATA_ATTR uint32_t s_deep_sleep_clock_sec;
+static RTC_DATA_ATTR uint64_t s_deep_sleep_rtc_us;
 
 #define KEY_GUARD_MAX_US (10LL * 1000 * 1000)
 static key_guard_t s_key_guard;
@@ -178,7 +185,7 @@ static void set_backlight_percent(uint8_t percent)
 
 static void apply_active_backlight(uint32_t now)
 {
-    if (!s_backlight_on) return;
+    if (!s_backlight_on || s_manual_screen_off) return;
     uint8_t percent = desired_backlight_percent(now);
     if (percent != s_backlight_percent) {
         set_backlight_percent(percent);
@@ -697,16 +704,45 @@ static void restore_clock_if_available(void)
         s_model.storage_warning = true;
         return;
     }
-    if (!loaded) return;
     s_clock_persistence_enabled = true;
-    if (now_sec() >= saved) return;
+    uint32_t restored = loaded ? saved : CLOCK_BOOTSTRAP_UNIX_SEC;
+    if (loaded && saved > CLOCK_BOOTSTRAP_UNIX_SEC + CLOCK_BOOTSTRAP_FUTURE_TOLERANCE_SEC) {
+        restored = CLOCK_BOOTSTRAP_UNIX_SEC;
+        ESP_LOGW(TAG, "offline clock ahead of firmware time, reset to bootstrap");
+    }
+    if (s_deep_sleep_magic == DEEP_SLEEP_MAGIC &&
+        s_deep_sleep_clock_sec > 0 && s_deep_sleep_rtc_us > 0) {
+        uint64_t rtc_now = esp_rtc_get_time_us();
+        if (rtc_now > s_deep_sleep_rtc_us) {
+            uint64_t elapsed = (rtc_now - s_deep_sleep_rtc_us) / 1000000ULL;
+            if (elapsed > 0 && elapsed <= CLOCK_DEEP_SLEEP_ELAPSED_MAX_SEC) {
+                uint64_t candidate = (uint64_t)s_deep_sleep_clock_sec + elapsed;
+                if (candidate <= UINT32_MAX && candidate > restored) {
+                    restored = (uint32_t)candidate;
+                    ESP_LOGI(TAG, "deep sleep offline clock +%llu sec",
+                             (unsigned long long)elapsed);
+                }
+            }
+        }
+    }
+    if (now_sec() >= restored) return;
 
     const struct timeval tv = {
-        .tv_sec = (time_t)saved,
+        .tv_sec = (time_t)restored,
         .tv_usec = 0,
     };
     if (settimeofday(&tv, NULL) == 0) {
-        ESP_LOGI(TAG, "已恢复离线时间: %lu", (unsigned long)saved);
+        ESP_LOGI(TAG, "已恢复离线时间: %lu", (unsigned long)restored);
+        if (!loaded || restored != saved) {
+            esp_err_t save_err = smoking_store_save_clock(restored);
+            if (save_err == ESP_OK) {
+                s_last_clock_save_sec = restored;
+            } else {
+                ESP_LOGW(TAG, "save adjusted offline clock failed: %s",
+                         esp_err_to_name(save_err));
+                s_model.storage_warning = true;
+            }
+        }
     } else {
         ESP_LOGW(TAG, "恢复离线时间失败");
         s_model.storage_warning = true;
@@ -830,6 +866,7 @@ static void log_deep_sleep_warning(const char *step, esp_err_t err)
 static bool deep_sleep_allowed(void)
 {
     if (s_entering_deep_sleep) return false;
+    if (s_model.persisted.screen == SMOKING_SCREEN_ACTIVE) return false;
     if (s_model.focus_running) return false;
     tools_radio_status_t radio = tools_radio_status();
     if (radio.wanted_playing || radio.state == TOOLS_RADIO_PLAYING ||
@@ -860,10 +897,11 @@ static void enter_idle_deep_sleep(void)
 {
     if (!deep_sleep_allowed()) return;
     s_entering_deep_sleep = true;
+    uint32_t sleep_clock = now_sec();
     ESP_LOGI(TAG, "空闲 %u 秒，进入 deep sleep", IDLE_DEEP_SLEEP_SEC);
 
     if (s_model.persisted.screen == SMOKING_SCREEN_COUNT_SELECT) {
-        smoking_model_save_pending(&s_model, model_time_sec(now_sec()));
+        smoking_model_save_pending(&s_model, model_time_sec(sleep_clock));
     }
     queue_save_if_dirty();
     save_clock_if_due(true);
@@ -900,6 +938,8 @@ static void enter_idle_deep_sleep(void)
     tools_radio_stop();
     log_deep_sleep_warning("Wi-Fi stop", tools_wifi_stop_all());
 
+    s_deep_sleep_clock_sec = sleep_clock;
+    s_deep_sleep_rtc_us = esp_rtc_get_time_us();
     log_deep_sleep_warning("CW2017 suspend", bsp_battery_sleep());
     log_deep_sleep_warning("ES8311 suspend", bsp_audio_sleep());
     log_deep_sleep_warning("I2S pin release", bsp_audio_prepare_deep_sleep());
@@ -937,6 +977,11 @@ static void process_input(const input_event_t *input)
 {
     uint32_t now = now_sec();
     if (!s_backlight_on) {
+        if (s_manual_screen_off && input->event != BSP_BTN_PRESS) {
+            s_ignore_wake_tail = true;
+            return;
+        }
+        s_manual_screen_off = false;
         set_backlight_percent(desired_backlight_percent(now));
         s_ignore_wake_tail = input->event == BSP_BTN_PRESS;
         s_last_input_sec = now;
@@ -944,21 +989,27 @@ static void process_input(const input_event_t *input)
         return;
     }
     if (s_ignore_wake_tail) {
-        if (input->event != BSP_BTN_PRESS) {
+        if (input->event == BSP_BTN_CLICK ||
+            input->event == BSP_BTN_DOUBLE ||
+            input->event == BSP_BTN_LONG) {
             s_ignore_wake_tail = false;
             s_last_input_sec = now;
             request_render();
             return;
         }
-        s_ignore_wake_tail = false;
+        s_last_input_sec = now;
+        request_render();
+        return;
     }
     s_last_input_sec = now;
 
     smoking_screen_t screen = (smoking_screen_t)s_model.persisted.screen;
     if (screen == SMOKING_SCREEN_HOME) {
         if (input->event == BSP_BTN_LONG && input->btn == BSP_BTN_OK) {
-            smoking_model_enter_time_settings(&s_model, local_seconds_of_day(now));
-            apply_active_backlight(now);
+            s_manual_screen_off = true;
+            set_backlight_percent(0);
+            request_render();
+            return;
         } else if (input->event == BSP_BTN_CLICK && input->btn == BSP_BTN_UP) {
             smoking_model_home_prev(&s_model);
         } else if (input->event == BSP_BTN_CLICK && input->btn == BSP_BTN_DOWN) {
