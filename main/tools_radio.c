@@ -35,16 +35,18 @@ static const char *TAG = "tools_radio";
 #define RADIO_VOLUME_STEP 10u
 
 static const radio_station_t RADIO_STATIONS[] = {
+    {"杭州交通经济", "本地路况 · 网络直播",
+     "http://lhttp.qtfm.cn/live/1133/64k.mp3"},
+    {"杭州华语之声", "城市陪伴 · 网络直播",
+     "http://lhttp.qtfm.cn/live/20505/64k.mp3"},
+    {"杭州城市资讯", "潮流音乐 · 网络直播",
+     "http://lhttp-hw.qtfm.cn/live/15318146/64k.mp3"},
+    {"西湖之声", "杭州本地 · 网络直播",
+     "http://lhttp.qtfm.cn/live/1163/64k.mp3"},
+    {"浙江之声", "浙江新闻 · 网络直播",
+     "http://lhttp.qtfm.cn/live/4518/64k.mp3"},
     {"中国之声", "新闻综合 · 网络直播",
      "http://lhttp.qingting.fm/live/15318317/64k.mp3"},
-    {"怀旧音乐", "经典老歌 · 网络直播",
-     "http://lhttp.qingting.fm/live/4804/64k.mp3"},
-    {"清晨音乐", "轻松旋律 · 网络直播",
-     "http://lhttp.qingting.fm/live/4915/64k.mp3"},
-    {"两广之声", "粤语音乐 · 网络直播",
-     "http://lhttp.qingting.fm/live/20500149/64k.mp3"},
-    {"羊城交通", "城市资讯 · 网络直播",
-     "http://lhttp.qingting.fm/live/1262/64k.mp3"},
     {"第一财经", "财经资讯 · 网络直播",
      "http://lhttp.qingting.fm/live/276/64k.mp3"},
 };

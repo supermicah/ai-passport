@@ -203,6 +203,7 @@ static void request_wifi_connect(void)
         set_state_for_idle();
         return;
     }
+    if (s_wifi_connecting) return;
 
     s_sta_config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
     s_sta_config.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;

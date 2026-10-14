@@ -34,14 +34,29 @@ def test_weather_is_not_started_from_idle_tick() -> None:
     assert "tools_weather_request_refresh" not in tick_body
 
 
-def test_radio_exit_stops_wifi_and_active_smoking_stays_awake() -> None:
+def test_radio_exit_keeps_wifi_and_active_smoking_stays_awake() -> None:
     source = MAIN.read_text(encoding="utf-8")
     assert "leave_radio_screen" in source
-    assert 'log_deep_sleep_warning("radio Wi-Fi stop", tools_wifi_stop_all())' in source
+    leave_body = source.split("static void leave_radio_screen(void)", 1)[1].split(
+        "static void request_render", 1
+    )[0]
+    assert "tools_radio_stop()" in leave_body
+    assert "tools_wifi_stop_all" not in leave_body
     deep_sleep_body = source.split("static bool deep_sleep_allowed(void)", 1)[1].split(
         "static void restore_button_after_sleep_abort", 1
     )[0]
     assert "SMOKING_SCREEN_ACTIVE" in deep_sleep_body
+
+
+def test_saved_wifi_reconnects_on_boot_for_time_and_radio() -> None:
+    source = MAIN.read_text(encoding="utf-8")
+    app_main_body = source.split("void app_main(void)", 1)[1]
+    store_ready_body = app_main_body.split("if (store_partition_err == ESP_OK)", 1)[1].split(
+        "s_last_input_sec = now_sec();", 1
+    )[0]
+    assert "restore_clock_if_available()" in store_ready_body
+    assert "tools_wifi_reconnect()" in store_ready_body
+    assert "启动 Wi-Fi 失败" in store_ready_body
 
 
 def test_screen_off_does_not_steal_navigation_buttons() -> None:
@@ -127,7 +142,8 @@ def main() -> int:
     test_idle_sleep_does_not_periodically_wake_by_default()
     test_default_and_smoking_brightness_are_reduced()
     test_weather_is_not_started_from_idle_tick()
-    test_radio_exit_stops_wifi_and_active_smoking_stays_awake()
+    test_radio_exit_keeps_wifi_and_active_smoking_stays_awake()
+    test_saved_wifi_reconnects_on_boot_for_time_and_radio()
     test_screen_off_does_not_steal_navigation_buttons()
     test_home_ok_long_press_turns_off_screen()
     test_manual_screen_off_ignores_long_press_tail_until_new_press()

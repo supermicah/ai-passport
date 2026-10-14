@@ -664,7 +664,6 @@ static void enter_radio_screen(void)
 static void leave_radio_screen(void)
 {
     tools_radio_stop();
-    log_deep_sleep_warning("radio Wi-Fi stop", tools_wifi_stop_all());
     smoking_model_return_home(&s_model);
 }
 
@@ -1263,6 +1262,10 @@ void app_main(void)
                 s_model.storage_warning = true;
             }
             restore_clock_if_available();
+            esp_err_t wifi_err = tools_wifi_reconnect();
+            if (wifi_err != ESP_OK) {
+                ESP_LOGW(TAG, "启动 Wi-Fi 失败: %s", esp_err_to_name(wifi_err));
+            }
         }
         s_last_input_sec = now_sec();
         esp_err_t store_err = smoking_store_init(store_status, NULL);
