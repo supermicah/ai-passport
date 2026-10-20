@@ -9,6 +9,8 @@
 #define SMOKING_DEFAULT_DAILY_GOAL 20u
 #define SMOKING_MIN_DAILY_GOAL 1u
 #define SMOKING_MAX_DAILY_GOAL 20u
+#define SMOKING_MAX_DAILY_CIGARETTES 200u
+#define SMOKING_MAX_SESSION_CIGARETTES 99u
 #define SMOKING_RESERVED_GAME_BYTES 28u
 #define SMOKING_FOCUS_WORK_SEC (25u * 60u)
 #define SMOKING_FOCUS_BREAK_SEC (5u * 60u)
@@ -33,6 +35,7 @@ typedef enum {
 typedef enum {
     SMOKING_SETTING_TIME = 0,
     SMOKING_SETTING_GOAL,
+    SMOKING_SETTING_TODAY,
     SMOKING_SETTING_WIFI,
     SMOKING_SETTING_COUNT,
 } smoking_setting_t;
@@ -77,9 +80,11 @@ typedef struct {
     int edit_hour;
     int edit_minute;
     bool edit_minute_selected;
+    int32_t edit_today_day;
     uint8_t selected_setting;
     bool editing_time;
     bool editing_goal;
+    bool editing_today;
     uint8_t focus_mode;
     bool focus_running;
     uint32_t focus_started_at;
@@ -113,6 +118,7 @@ smoking_totals_t smoking_model_today(const smoking_model_t *model, int32_t today
 smoking_totals_t smoking_model_last_7_days(const smoking_model_t *model, int32_t today);
 uint32_t smoking_model_last_interval_sec(const smoking_model_t *model, uint32_t now_sec);
 uint16_t smoking_model_daily_goal(const smoking_model_t *model);
+uint32_t smoking_model_today_cigarettes(const smoking_model_t *model, int32_t today);
 uint8_t smoking_model_goal_streak(const smoking_model_t *model, int32_t today);
 uint8_t smoking_model_goal_best_streak(const smoking_model_t *model, int32_t today);
 

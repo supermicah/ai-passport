@@ -71,6 +71,12 @@ def test_wifi_and_radio_preferences_use_dedicated_partition() -> None:
     assert "load_tools_data_credentials" in wifi
     assert "save_credentials_to_tools_data" in wifi
     assert "clear_tools_data_credentials" in wifi
+    assert "#define WIFI_MAX_CREDENTIALS 5" in wifi
+    assert "WIFI_STORE_MAGIC_MULTI" in wifi
+    assert "WIFI_STORE_MAGIC_LEGACY" in wifi
+    assert "wifi_config_t configs[WIFI_MAX_CREDENTIALS]" in wifi
+    assert "upsert_saved_credential" in wifi
+    assert "select_scanned_saved_config" in wifi
     assert "nvs_open_from_partition(TOOLS_STORAGE_PARTITION" in wifi
     assert "nvs_open_from_partition(TOOLS_STORAGE_PARTITION" in radio
     assert 'nvs_open("radio"' in radio

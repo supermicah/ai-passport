@@ -16,6 +16,8 @@ static void test_smoking_record_flow(void)
     assert(model.persisted.screen == SMOKING_SCREEN_COUNT_SELECT);
     smoking_model_count_up(&model);
     assert(model.pending_cigarettes == 2);
+    smoking_model_count_up(&model);
+    assert(model.pending_cigarettes == 3);
     smoking_model_save_pending(&model, DAY(10) + 3660);
 
     assert(model.persisted.screen == SMOKING_SCREEN_HOME);
@@ -24,7 +26,7 @@ static void test_smoking_record_flow(void)
     assert(model.persisted.last.day == 10);
     assert(model.persisted.last.start_sec == 3600);
     assert(model.persisted.last.duration_sec == 60);
-    assert(model.persisted.last.cigarettes == 2);
+    assert(model.persisted.last.cigarettes == 3);
 }
 
 static void test_stats_and_interval(void)
@@ -37,14 +39,16 @@ static void test_stats_and_interval(void)
     smoking_model_save_pending(&model, DAY(5) + 10);
     smoking_model_start(&model, DAY(5) + 120);
     smoking_model_finish(&model, DAY(5) + 125);
-    smoking_model_count_up(&model);
+    for (int i = 1; i < 5; i++) {
+        smoking_model_count_up(&model);
+    }
     smoking_model_save_pending(&model, DAY(5) + 125);
 
     smoking_totals_t today = smoking_model_today(&model, 5);
-    assert(today.cigarettes == 2);
+    assert(today.cigarettes == 5);
     assert(today.duration_sec == 5);
     smoking_totals_t week = smoking_model_last_7_days(&model, 5);
-    assert(week.cigarettes == 3);
+    assert(week.cigarettes == 6);
     assert(week.duration_sec == 25);
     assert(smoking_model_last_interval_sec(&model, DAY(6) + 125) == 86400);
 }
@@ -53,10 +57,35 @@ static void add_record(smoking_model_t *model, uint32_t day, uint8_t cigarettes)
 {
     smoking_model_start(model, DAY(day) + 100);
     smoking_model_finish(model, DAY(day) + 110);
-    if (cigarettes >= 2) {
+    while (model->pending_cigarettes < cigarettes) {
         smoking_model_count_up(model);
     }
     smoking_model_save_pending(model, DAY(day) + 110);
+}
+
+static void test_session_count_allows_more_than_two_and_caps_at_max(void)
+{
+    smoking_model_t model;
+    smoking_model_init(&model);
+
+    smoking_model_start(&model, DAY(3) + 200);
+    smoking_model_finish(&model, DAY(3) + 230);
+    for (int i = 1; i < 12; i++) {
+        smoking_model_count_up(&model);
+    }
+    assert(model.pending_cigarettes == 12);
+    smoking_model_save_pending(&model, DAY(3) + 230);
+    assert(model.persisted.last.cigarettes == 12);
+    assert(smoking_model_today(&model, 3).cigarettes == 12);
+
+    smoking_model_start(&model, DAY(4) + 200);
+    smoking_model_finish(&model, DAY(4) + 230);
+    for (int i = 0; i < 200; i++) {
+        smoking_model_count_up(&model);
+    }
+    assert(model.pending_cigarettes == SMOKING_MAX_SESSION_CIGARETTES);
+    smoking_model_save_pending(&model, DAY(4) + 230);
+    assert(model.persisted.last.cigarettes == SMOKING_MAX_SESSION_CIGARETTES);
 }
 
 static void test_history_replaces_oldest(void)
@@ -194,6 +223,8 @@ static void test_settings_menu_and_time_edit(void)
     assert(model.selected_setting == SMOKING_SETTING_GOAL);
     assert(!model.editing_time);
     smoking_model_settings_down(&model);
+    assert(model.selected_setting == SMOKING_SETTING_TODAY);
+    smoking_model_settings_down(&model);
     assert(model.selected_setting == SMOKING_SETTING_WIFI);
     smoking_model_settings_down(&model);
     assert(model.selected_setting == SMOKING_SETTING_TIME);
@@ -216,7 +247,7 @@ static void test_goal_settings_and_streaks(void)
     assert(smoking_model_daily_goal(&model) == SMOKING_DEFAULT_DAILY_GOAL);
 
     model.persisted.selected_feature = SMOKING_FEATURE_SETTINGS;
-    smoking_model_enter_selected(&model, DAY(9));
+    smoking_model_enter_selected(&model, DAY(30));
     smoking_model_settings_down(&model);
     assert(model.selected_setting == SMOKING_SETTING_GOAL);
     smoking_model_settings_click(&model);
@@ -231,10 +262,25 @@ static void test_goal_settings_and_streaks(void)
     assert(!model.editing_goal);
 
     smoking_model_settings_down(&model);
+    assert(model.selected_setting == SMOKING_SETTING_TODAY);
+    smoking_model_settings_click(&model);
+    assert(model.editing_today);
+    assert(smoking_model_today_cigarettes(&model, 30) == 0);
+    smoking_model_settings_down(&model);
+    smoking_model_settings_down(&model);
+    assert(smoking_model_today_cigarettes(&model, 30) == 2);
+    smoking_model_settings_up(&model);
+    assert(smoking_model_today_cigarettes(&model, 30) == 1);
+    assert(model.dirty);
+    smoking_model_settings_click(&model);
+    assert(!model.editing_today);
+
+    smoking_model_settings_down(&model);
     assert(model.selected_setting == SMOKING_SETTING_WIFI);
     smoking_model_settings_click(&model);
     assert(!model.editing_time);
     assert(!model.editing_goal);
+    assert(!model.editing_today);
 
     model.persisted.daily_goal = 2;
     add_record(&model, 10, 1);
@@ -285,6 +331,7 @@ int main(void)
 {
     test_smoking_record_flow();
     test_stats_and_interval();
+    test_session_count_allows_more_than_two_and_caps_at_max();
     test_history_replaces_oldest();
     test_restore_sanitizes_runtime_and_version();
     test_active_session_persists_for_low_power_sleep();

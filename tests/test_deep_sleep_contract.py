@@ -212,8 +212,11 @@ class DeepSleepContractTest(unittest.TestCase):
         self.assertIn("RTC_DATA_ATTR uint64_t s_deep_sleep_rtc_us", self.main)
         restore = function_body(self.main, "restore_clock_if_available")
         self.assertIn("loaded ? saved : CLOCK_BOOTSTRAP_UNIX_SEC", restore)
-        self.assertIn("saved > CLOCK_BOOTSTRAP_UNIX_SEC + CLOCK_BOOTSTRAP_FUTURE_TOLERANCE_SEC",
-                      restore)
+        self.assertIn("saved < CLOCK_BOOTSTRAP_UNIX_SEC", restore)
+        self.assertIn("offline clock behind firmware time, advance to bootstrap", restore)
+        self.assertNotIn("saved > CLOCK_BOOTSTRAP_UNIX_SEC + CLOCK_BOOTSTRAP_FUTURE_TOLERANCE_SEC",
+                         restore)
+        self.assertNotIn("offline clock ahead of firmware time, reset to bootstrap", restore)
         self.assertIn("esp_rtc_get_time_us()", restore)
         self.assertIn("rtc_now > s_deep_sleep_rtc_us", restore)
         self.assertIn("s_deep_sleep_clock_sec + elapsed", restore)

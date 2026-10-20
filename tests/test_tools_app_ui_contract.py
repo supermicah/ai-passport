@@ -107,40 +107,66 @@ def child_pairs(boxes: list[tuple[str, int, int, int, int]]) -> set[tuple[str, s
 
 def test_home_and_settings_static_layout_do_not_overlap() -> None:
     home = [
-        ("title", 12, 32, 120, LINE_HEIGHT),
-        ("dirty", 170, 32, 58, LINE_HEIGHT),
+        ("mark_v", 14, 35, 4, 18),
+        ("mark_h", 22, 42, 28, 3),
+        ("title", 56, 30, 112, LINE_HEIGHT),
+        ("dirty", 168, 32, 58, LINE_HEIGHT),
         ("weather", 14, 58, 212, LINE_HEIGHT),
         ("wifi", 14, 80, 212, LINE_HEIGHT),
-        ("stats_panel", 14, 104, 212, 72),
-        ("today", 26, 110, 188, LINE_HEIGHT),
-        ("streak", 26, 132, 188, LINE_HEIGHT),
-        ("interval", 26, 154, 188, LINE_HEIGHT),
-        ("feature0", 14, 180, 212, 24),
-        ("feature0_text", 24, 180, 180, LINE_HEIGHT),
-        ("feature1", 14, 208, 212, 24),
-        ("feature1_text", 24, 208, 180, LINE_HEIGHT),
-        ("feature2", 14, 236, 212, 24),
-        ("feature2_text", 24, 236, 180, LINE_HEIGHT),
-        ("feature3", 14, 264, 212, 24),
-        ("feature3_text", 24, 264, 180, LINE_HEIGHT),
-        ("footer", 14, 292, 212, LINE_HEIGHT),
-        ("footer_left", 14, 292, 120, LINE_HEIGHT),
-        ("footer_right", 132, 292, 94, LINE_HEIGHT),
+        ("stats_panel", 12, 103, 216, 88),
+        ("today", 24, 109, 188, LINE_HEIGHT),
+        ("streak", 24, 130, 188, LINE_HEIGHT),
+        ("progress_track", 24, 151, 68, 8),
+        ("progress_fill", 24, 151, 68, 8),
+        ("interval", 24, 166, 188, LINE_HEIGHT),
+        ("feature0", 12, 196, 216, 23),
+        ("feature0_mark", 18, 201, 3, 13),
+        ("feature0_index", 28, 197, 66, LINE_HEIGHT),
+        ("feature0_text", 100, 197, 86, LINE_HEIGHT),
+        ("feature0_arrow", 196, 197, 24, LINE_HEIGHT),
+        ("feature1", 12, 220, 216, 23),
+        ("feature1_mark", 18, 225, 3, 13),
+        ("feature1_index", 28, 221, 66, LINE_HEIGHT),
+        ("feature1_text", 100, 221, 86, LINE_HEIGHT),
+        ("feature1_arrow", 196, 221, 24, LINE_HEIGHT),
+        ("feature2", 12, 244, 216, 23),
+        ("feature2_mark", 18, 249, 3, 13),
+        ("feature2_index", 28, 245, 66, LINE_HEIGHT),
+        ("feature2_text", 100, 245, 86, LINE_HEIGHT),
+        ("feature2_arrow", 196, 245, 24, LINE_HEIGHT),
+        ("feature3", 12, 268, 216, 23),
+        ("feature3_mark", 18, 273, 3, 13),
+        ("feature3_index", 28, 269, 66, LINE_HEIGHT),
+        ("feature3_text", 100, 269, 86, LINE_HEIGHT),
+        ("feature3_arrow", 196, 269, 24, LINE_HEIGHT),
+        ("footer", 14, 294, 212, LINE_HEIGHT),
+        ("footer_left", 14, 294, 120, LINE_HEIGHT),
+        ("footer_right", 132, 294, 94, LINE_HEIGHT),
     ]
     settings = [
-        ("title", 14, 38, 80, LINE_HEIGHT),
-        ("row_time", 14, 68, 212, 58),
-        ("time_title", 28, 74, 70, LINE_HEIGHT),
-        ("time_value", 120, 74, 90, LINE_HEIGHT),
-        ("time_hint", 28, 100, 182, LINE_HEIGHT),
-        ("row_goal", 14, 132, 212, 58),
-        ("goal_title", 28, 138, 70, LINE_HEIGHT),
-        ("goal_value", 120, 138, 90, LINE_HEIGHT),
-        ("goal_hint", 28, 164, 182, LINE_HEIGHT),
-        ("row_wifi", 14, 196, 212, 58),
-        ("wifi_title", 28, 202, 70, LINE_HEIGHT),
-        ("wifi_value", 120, 202, 90, LINE_HEIGHT),
-        ("wifi_hint", 28, 228, 182, LINE_HEIGHT),
+        ("mark_v", 14, 35, 4, 18),
+        ("mark_h", 22, 42, 28, 3),
+        ("title", 56, 31, 80, LINE_HEIGHT),
+        ("row_time", 14, 56, 212, 48),
+        ("time_mark", 20, 66, 3, 28),
+        ("time_title", 28, 61, 70, LINE_HEIGHT),
+        ("time_value", 120, 61, 90, LINE_HEIGHT),
+        ("time_hint", 28, 82, 182, LINE_HEIGHT),
+        ("row_goal", 14, 106, 212, 48),
+        ("goal_mark", 20, 116, 3, 28),
+        ("goal_title", 28, 111, 70, LINE_HEIGHT),
+        ("goal_value", 120, 111, 90, LINE_HEIGHT),
+        ("goal_hint", 28, 132, 182, LINE_HEIGHT),
+        ("row_today", 14, 156, 212, 48),
+        ("today_mark", 20, 166, 3, 28),
+        ("today_title", 28, 161, 70, LINE_HEIGHT),
+        ("today_value", 120, 161, 90, LINE_HEIGHT),
+        ("today_hint", 28, 182, 182, LINE_HEIGHT),
+        ("row_wifi", 14, 206, 212, 48),
+        ("wifi_mark", 20, 216, 3, 28),
+        ("wifi_title", 28, 211, 70, LINE_HEIGHT),
+        ("wifi_value", 120, 211, 90, LINE_HEIGHT),
+        ("wifi_hint", 28, 232, 182, LINE_HEIGHT),
         ("help1", 20, 264, 200, LINE_HEIGHT),
         ("help2", 20, 288, 200, LINE_HEIGHT),
     ]
@@ -152,6 +178,7 @@ def test_home_and_settings_static_layout_do_not_overlap() -> None:
                 ("footer", "footer_left"),
                 ("footer", "footer_right"),
                 ("footer_left", "footer_right"),
+                ("progress_track", "progress_fill"),
             )
         }
     )
@@ -160,10 +187,48 @@ def test_home_and_settings_static_layout_do_not_overlap() -> None:
     assert not problems, "\n".join(problems)
 
 
+def test_battery_uses_icon_without_percent_text() -> None:
+    text = (MAIN_DIR / "main.c").read_text(encoding="utf-8")
+    body = text.split("static void render_battery_pill", 1)[1].split(
+        "static void render_setting_row", 1
+    )[0]
+    assert "pill(root, x, y, 36, 18" in body
+    assert "panel(root, x + 35, y + 5, 3, 8, accent, 0)" in body
+    assert '"%d%%"' not in body
+    assert "label_one_line" not in body
+
+
+def test_wifi_setup_uses_softap_web_form_not_wechat_or_blufi() -> None:
+    text = (MAIN_DIR / "main.c").read_text(encoding="utf-8")
+    wifi = (MAIN_DIR / "tools_wifi.c").read_text(encoding="utf-8")
+    header = (MAIN_DIR / "tools_wifi.h").read_text(encoding="utf-8")
+    cmake = (MAIN_DIR / "CMakeLists.txt").read_text(encoding="utf-8")
+    assert "OK 开AP" in text
+    assert "TOOLS_WIFI_SETUP_SSID" in text
+    assert "http://192.168.4.1" in header
+    assert "AI-Passport-Setup" in header
+    assert "esp_netif_create_default_wifi_ap" in wifi
+    assert "httpd_start" in wifi
+    assert "WIFI_MODE_APSTA" in wifi
+    assert "save_credentials_to_tools_data" in wifi
+    assert "Nearby Wi-Fi" in wifi
+    assert "<select id=\\\"ssid\\\" name=\\\"ssid\\\">" in wifi
+    assert "custom_ssid" in wifi
+    assert "esp_wifi_scan_start" in wifi
+    assert "esp_wifi_scan_get_ap_records" in wifi
+    assert "s_save_on_connect" in wifi
+    assert "tools_wifi_security.c" not in cmake
+    assert "微信" not in text
+    assert "小程序" not in text
+    assert "BLUFI" not in wifi
+
+
 def main() -> int:
     test_all_fixed_chinese_text_has_generated_glyphs()
     test_home_feature_order_keeps_settings_last()
     test_home_and_settings_static_layout_do_not_overlap()
+    test_battery_uses_icon_without_percent_text()
+    test_wifi_setup_uses_softap_web_form_not_wechat_or_blufi()
     print("Tools app UI contract: PASS")
     return 0
 

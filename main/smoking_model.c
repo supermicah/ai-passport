@@ -132,7 +132,7 @@ void smoking_model_restore(smoking_model_t *model, const smoking_persist_state_t
             memset(&model->persisted.days[i], 0, sizeof(model->persisted.days[i]));
         }
     }
-    if (model->persisted.last.cigarettes > 2 ||
+    if (model->persisted.last.cigarettes > SMOKING_MAX_SESSION_CIGARETTES ||
         model->persisted.last.duration_sec > SECONDS_PER_DAY) {
         memset(&model->persisted.last, 0, sizeof(model->persisted.last));
     }
@@ -224,9 +224,11 @@ void smoking_model_enter_time_settings(smoking_model_t *model, uint32_t now_sec)
     model->edit_hour = (int)((now_sec % SECONDS_PER_DAY) / 3600u);
     model->edit_minute = (int)((now_sec % 3600u) / 60u);
     model->edit_minute_selected = false;
+    model->edit_today_day = day_from_sec(now_sec);
     model->selected_setting = SMOKING_SETTING_TIME;
     model->editing_time = false;
     model->editing_goal = false;
+    model->editing_today = false;
 }
 
 void smoking_model_return_home(smoking_model_t *model)
@@ -237,6 +239,7 @@ void smoking_model_return_home(smoking_model_t *model)
     model->pending_cigarettes = 1;
     model->editing_time = false;
     model->editing_goal = false;
+    model->editing_today = false;
     model->focus_running = false;
 }
 
@@ -263,7 +266,9 @@ void smoking_model_finish(smoking_model_t *model, uint32_t now_sec)
 
 void smoking_model_count_up(smoking_model_t *model)
 {
-    if (model->pending_cigarettes < 2) model->pending_cigarettes++;
+    if (model->pending_cigarettes < SMOKING_MAX_SESSION_CIGARETTES) {
+        model->pending_cigarettes++;
+    }
 }
 
 void smoking_model_count_down(smoking_model_t *model)
@@ -292,7 +297,9 @@ void smoking_model_save_pending(smoking_model_t *model, uint32_t now_sec)
     uint32_t duration = model->pending_duration_sec ? model->pending_duration_sec : 1u;
     uint8_t cigarettes = model->pending_cigarettes;
     if (cigarettes < 1) cigarettes = 1;
-    if (cigarettes > 2) cigarettes = 2;
+    if (cigarettes > SMOKING_MAX_SESSION_CIGARETTES) {
+        cigarettes = SMOKING_MAX_SESSION_CIGARETTES;
+    }
 
     int32_t day = day_from_sec(model->smoking_started_at);
     smoking_day_stat_t *slot = find_day_slot(model, day);
@@ -348,6 +355,11 @@ uint32_t smoking_model_last_interval_sec(const smoking_model_t *model, uint32_t 
 uint16_t smoking_model_daily_goal(const smoking_model_t *model)
 {
     return valid_daily_goal(model->persisted.daily_goal);
+}
+
+uint32_t smoking_model_today_cigarettes(const smoking_model_t *model, int32_t today)
+{
+    return smoking_model_today(model, today).cigarettes;
 }
 
 static bool has_any_record(const smoking_model_t *model, int32_t *oldest_day)
@@ -460,6 +472,14 @@ void smoking_model_time_click(smoking_model_t *model)
 
 void smoking_model_settings_up(smoking_model_t *model)
 {
+    if (model->editing_today) {
+        smoking_day_stat_t *slot = find_day_slot(model, model->edit_today_day);
+        if (slot->cigarettes > 0) {
+            slot->cigarettes--;
+            model->dirty = true;
+        }
+        return;
+    }
     if (model->editing_goal) {
         if (model->persisted.daily_goal > SMOKING_MIN_DAILY_GOAL) {
             model->persisted.daily_goal--;
@@ -478,6 +498,14 @@ void smoking_model_settings_up(smoking_model_t *model)
 
 void smoking_model_settings_down(smoking_model_t *model)
 {
+    if (model->editing_today) {
+        smoking_day_stat_t *slot = find_day_slot(model, model->edit_today_day);
+        if (slot->cigarettes < SMOKING_MAX_DAILY_CIGARETTES) {
+            slot->cigarettes++;
+            model->dirty = true;
+        }
+        return;
+    }
     if (model->editing_goal) {
         if (model->persisted.daily_goal < SMOKING_MAX_DAILY_GOAL) {
             model->persisted.daily_goal++;
@@ -503,12 +531,20 @@ void smoking_model_settings_click(smoking_model_t *model)
         model->editing_goal = false;
         return;
     }
+    if (model->editing_today) {
+        model->editing_today = false;
+        return;
+    }
     if (model->selected_setting == SMOKING_SETTING_TIME) {
         model->editing_time = true;
         model->edit_minute_selected = false;
     } else if (model->selected_setting == SMOKING_SETTING_GOAL) {
         model->persisted.daily_goal = smoking_model_daily_goal(model);
         model->editing_goal = true;
+    } else if (model->selected_setting == SMOKING_SETTING_TODAY) {
+        smoking_day_stat_t *slot = find_day_slot(model, model->edit_today_day);
+        slot->day = model->edit_today_day;
+        model->editing_today = true;
     }
 }
 
