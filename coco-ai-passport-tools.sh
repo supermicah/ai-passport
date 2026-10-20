@@ -2,4 +2,4 @@
 set -eu
 
 cd /Users/bytedance/Server/Code/github.com/supermicah/ai-passport
-exec coco resume 01a153db-be44-7e61-99a8-b1d57a18a160
+exec coco resume 01a15831-904d-7a13-95df-64997718f761
