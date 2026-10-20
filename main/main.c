@@ -6,6 +6,7 @@
 #include "bsp_pins.h"
 #include "key_guard.h"
 #include "lvgl.h"
+#include "page_turner.h"
 #include "smoking_model.h"
 #include "smoking_store.h"
 #include "tools_radio.h"
@@ -1352,6 +1353,9 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
 
 void app_main(void)
 {
+    page_turner_app_main();
+    return;
+
     s_boot_rtc_us = esp_rtc_get_time_us();
     ESP_LOGI(TAG, "AI Passport 小工具启动");
     const uint32_t wake_causes = esp_sleep_get_wakeup_causes();
