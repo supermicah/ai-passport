@@ -46,6 +46,8 @@ static const char *TAG = "tools_app";
 #define BEEP_SAMPLES 960u
 #define CLOCK_SAVE_INTERVAL_SEC (5u * 60u)
 #define CLOCK_DEEP_SLEEP_ELAPSED_MAX_SEC (30u * 24u * 60u * 60u)
+#define CLOCK_DEEP_SLEEP_RESYNC_SEC (6u * 60u * 60u)
+#define CLOCK_RESYNC_TIMEOUT_US (90LL * 1000LL * 1000LL)
 #define CLOCK_BOOTSTRAP_UNIX_SEC 1792410292u
 #define CLOCK_BOOTSTRAP_FUTURE_TOLERANCE_SEC 120u
 #define POWER_LOG_INTERVAL_SEC (5u * 60u)
@@ -99,10 +101,13 @@ static bool s_audio_ok;
 static bool s_backlight_on = true;
 static bool s_entering_deep_sleep;
 static bool s_clock_persistence_enabled;
+static bool s_clock_resync_pending;
+static bool s_clock_resync_wifi_active;
 static bool s_manual_screen_off;
 static uint32_t s_last_input_sec;
 static uint32_t s_last_clock_save_sec;
 static uint32_t s_last_power_log_sec;
+static int64_t s_clock_resync_started_us;
 static uint32_t s_battery_zero_filter_until_sec;
 static uint64_t s_boot_rtc_us;
 static uint8_t s_backlight_percent = BACKLIGHT_NORMAL_PERCENT;
@@ -807,6 +812,10 @@ static void restore_clock_if_available(void)
                     ESP_LOGI(TAG, "deep sleep offline clock +%llu sec",
                              (unsigned long long)elapsed);
                 }
+                if (elapsed >= CLOCK_DEEP_SLEEP_RESYNC_SEC) {
+                    s_clock_resync_pending = true;
+                    ESP_LOGI(TAG, "long sleep detected, will refresh clock by SNTP");
+                }
             }
         }
     }
@@ -831,6 +840,54 @@ static void restore_clock_if_available(void)
     } else {
         ESP_LOGW(TAG, "恢复离线时间失败");
         s_model.storage_warning = true;
+    }
+}
+
+static void finish_clock_resync(bool stop_wifi)
+{
+    s_clock_resync_pending = false;
+    s_clock_resync_wifi_active = false;
+    s_clock_resync_started_us = 0;
+    if (stop_wifi) {
+        log_deep_sleep_warning("clock sync Wi-Fi stop", tools_wifi_stop_all());
+    }
+}
+
+static void service_clock_resync_if_needed(void)
+{
+    if (!s_clock_resync_pending && !s_clock_resync_wifi_active) return;
+
+    tools_wifi_status_t status = tools_wifi_status();
+    if (status.provisioning) return;
+
+    if (s_clock_resync_wifi_active) {
+        int64_t elapsed_us = esp_timer_get_time() - s_clock_resync_started_us;
+        if (status.state == TOOLS_WIFI_NO_CREDENTIALS ||
+            status.state == TOOLS_WIFI_FAILED ||
+            elapsed_us >= CLOCK_RESYNC_TIMEOUT_US) {
+            ESP_LOGW(TAG, "clock SNTP refresh ended without sync, state=%d",
+                     (int)status.state);
+            finish_clock_resync(true);
+        }
+        return;
+    }
+
+    if (status.state != TOOLS_WIFI_OFF &&
+        status.state != TOOLS_WIFI_NO_CREDENTIALS &&
+        status.state != TOOLS_WIFI_FAILED) {
+        return;
+    }
+
+    esp_err_t err = tools_wifi_reconnect();
+    if (err == ESP_OK) {
+        s_clock_resync_pending = false;
+        s_clock_resync_wifi_active = true;
+        s_clock_resync_started_us = esp_timer_get_time();
+        ESP_LOGI(TAG, "started one-shot Wi-Fi clock refresh");
+    } else {
+        ESP_LOGW(TAG, "start one-shot clock refresh failed: %s",
+                 esp_err_to_name(err));
+        finish_clock_resync(false);
     }
 }
 
@@ -1261,8 +1318,14 @@ static void input_task(void *arg)
         TickType_t tick_now = xTaskGetTickCount();
         if (tick_now - last_refresh >= pdMS_TO_TICKS(1000)) {
             if (tools_wifi_take_time_synced()) {
+                bool was_clock_resync = s_clock_resync_wifi_active;
                 save_clock_if_due(true);
-                tools_weather_request_refresh();
+                if (was_clock_resync) {
+                    ESP_LOGI(TAG, "one-shot clock refresh synced");
+                    finish_clock_resync(true);
+                } else {
+                    tools_weather_request_refresh();
+                }
             }
             tools_wifi_status_t wifi = tools_wifi_status();
             tools_radio_set_network_ready(wifi_ready_for_radio(wifi));
@@ -1283,6 +1346,7 @@ static void input_task(void *arg)
             if (s_backlight_on) request_render();
             queue_save_if_dirty();
             save_clock_if_due(false);
+            service_clock_resync_if_needed();
             log_power_if_due(false);
             last_refresh = tick_now;
         }

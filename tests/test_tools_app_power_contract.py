@@ -115,6 +115,37 @@ def test_deep_sleep_clock_uses_boot_rtc_to_avoid_wake_time_overshoot() -> None:
     assert "uint64_t rtc_now = s_boot_rtc_us ? s_boot_rtc_us : esp_rtc_get_time_us();" in restore_body
 
 
+def test_long_sleep_triggers_bounded_one_shot_clock_sync() -> None:
+    source = MAIN.read_text(encoding="utf-8")
+    assert "#define CLOCK_DEEP_SLEEP_RESYNC_SEC (6u * 60u * 60u)" in source
+    assert "#define CLOCK_RESYNC_TIMEOUT_US (90LL * 1000LL * 1000LL)" in source
+    assert "static bool s_clock_resync_pending;" in source
+    assert "static bool s_clock_resync_wifi_active;" in source
+
+    restore_body = source.split("static void restore_clock_if_available(void)", 1)[1].split(
+        "static void finish_clock_resync", 1
+    )[0]
+    assert "elapsed >= CLOCK_DEEP_SLEEP_RESYNC_SEC" in restore_body
+    assert "s_clock_resync_pending = true;" in restore_body
+
+    resync_body = source.split("static void service_clock_resync_if_needed(void)", 1)[1].split(
+        "static void save_clock_if_due", 1
+    )[0]
+    assert "if (!s_clock_resync_pending && !s_clock_resync_wifi_active) return;" in resync_body
+    assert "if (status.provisioning) return;" in resync_body
+    assert "elapsed_us >= CLOCK_RESYNC_TIMEOUT_US" in resync_body
+    assert "finish_clock_resync(true);" in resync_body
+    assert "tools_wifi_reconnect()" in resync_body
+
+    tick_body = source.split("static void input_task", 1)[1].split(
+        "static void audio_task", 1
+    )[0]
+    assert "bool was_clock_resync = s_clock_resync_wifi_active;" in tick_body
+    assert "if (was_clock_resync)" in tick_body
+    assert "finish_clock_resync(true);" in tick_body
+    assert "service_clock_resync_if_needed();" in tick_body
+
+
 def test_wake_zero_battery_is_filtered_temporarily() -> None:
     source = MAIN.read_text(encoding="utf-8")
     assert "#define BATTERY_WAKE_ZERO_FILTER_SEC 20u" in source
@@ -217,6 +248,7 @@ def main() -> int:
     test_saved_wifi_does_not_reconnect_on_boot_by_default()
     test_wifi_settings_reconnects_saved_credentials_on_demand()
     test_deep_sleep_clock_uses_boot_rtc_to_avoid_wake_time_overshoot()
+    test_long_sleep_triggers_bounded_one_shot_clock_sync()
     test_wake_zero_battery_is_filtered_temporarily()
     test_screen_off_does_not_steal_navigation_buttons()
     test_home_ok_long_press_turns_off_screen()
