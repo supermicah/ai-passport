@@ -10,6 +10,7 @@ usage() {
 
 run_static_checks() {
     local actionlint_bin
+    local gc_sections_flag
     local test_dir
 
     python3 tools/check_repo.py
@@ -22,6 +23,12 @@ run_static_checks() {
         actionlint_bin="$(./tools/install-actionlint.sh)"
     fi
     "${actionlint_bin}" -color .github/workflows/*.yml
+
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        gc_sections_flag="-Wl,-dead_strip"
+    else
+        gc_sections_flag="-Wl,--gc-sections"
+    fi
 
     test_dir="$(mktemp -d /tmp/ai-passport-host-tests.XXXXXX)"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
@@ -64,7 +71,7 @@ run_static_checks() {
     for demo in audio low_power ble wifi; do
         "${CC:-cc}" -std=c11 -Wall -Wextra -Werror \
             -ffunction-sections -fdata-sections -Itests/demo_stubs -Imain \
-            "tests/test_demo_${demo}_runtime.c" -Wl,--gc-sections \
+            "tests/test_demo_${demo}_runtime.c" "${gc_sections_flag}" \
             -o "${test_dir}/test_demo_${demo}_runtime"
         "${test_dir}/test_demo_${demo}_runtime"
     done

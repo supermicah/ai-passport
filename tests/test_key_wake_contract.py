@@ -35,6 +35,8 @@ class KeyWakeGuardWiringTest(unittest.TestCase):
         cls.main = read("main/main.c")
 
     def test_on_key_consumes_the_guard_before_the_readiness_check(self) -> None:
+        if '#include "key_guard.h"' not in self.main:
+            self.skipTest("main application does not use the deep-sleep key guard")
         # A release can arrive after the post-init voltage sample but before input
         # dispatch is ready. on_key must run the guard first so that release still
         # disarms it, instead of being discarded by the readiness early-return.

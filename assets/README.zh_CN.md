@@ -15,6 +15,27 @@
 - 添加字库前评估 Flash 与内部 RAM 影响；ESP32-C3 无 PSRAM。
 - 不提交许可不允许分发的字库。
 
+| 文件 | 来源与用途 |
+| --- | --- |
+| [`fonts/pager_font_16.c`](fonts/pager_font_16.c) | LVGL 9 生成的 16 px 思源黑体简体中文子集，用于 Passport Pager 的正文、模式说明、状态、电量和连接设备名文本。它包含可打印 ASCII、[`fonts/pager_charset.txt`](fonts/pager_charset.txt) 中的固定界面符号，以及 [`fonts/pager_charset_names.txt`](fonts/pager_charset_names.txt) 中较大的简体中文常用字集合，尽量减少设备名和新增说明缺字。 |
+| [`fonts/pager_font_24.c`](fonts/pager_font_24.c) | LVGL 9 生成的 24 px 思源黑体简体中文子集，用于 Passport Pager 的标题、模式色块和确认标题。为控制 Flash 占用，它只包含可打印 ASCII 与固定界面符号。 |
+| [`fonts/pager_charset.txt`](fonts/pager_charset.txt) | 生成两个 pager 字号时使用的固定界面字符清单。修改屏幕固定文案后，重新生成字体前先更新此文件。 |
+| [`fonts/pager_charset_names.txt`](fonts/pager_charset_names.txt) | 16 px 字体额外使用的简体中文动态名称和说明字符清单，不会链接进 24 px 字体。 |
+| [`fonts/LICENSE-SourceHanSans.txt`](fonts/LICENSE-SourceHanSans.txt) | 随基于思源黑体生成的 pager 字体一起保留的许可证文本。 |
+
+生成命令形态如下，在 Managed Components 已可用的 ESP-IDF 项目中执行：
+
+```bash
+lv_font_conv --font managed_components/lvgl__lvgl/scripts/built_in_font/SourceHanSansSC-Normal.otf \
+  --size 16 --bpp 4 --format lvgl --no-compress -r 0x20-0x7E \
+  --symbols "$(cat assets/fonts/pager_charset.txt)$(cat assets/fonts/pager_charset_names.txt)" \
+  --lv-include lvgl.h -o assets/fonts/pager_font_16.c
+lv_font_conv --font managed_components/lvgl__lvgl/scripts/built_in_font/SourceHanSansSC-Normal.otf \
+  --size 24 --bpp 4 --format lvgl --no-compress -r 0x20-0x7E \
+  --symbols "$(cat assets/fonts/pager_charset.txt)" \
+  --lv-include lvgl.h -o assets/fonts/pager_font_24.c
+```
+
 ## 图片（images）
 
 可复用的源图与生成的显示资产放在 `images/`。

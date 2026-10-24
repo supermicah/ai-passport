@@ -17,6 +17,28 @@ Store reusable font files and generated font sources in `fonts/`.
 - Check Flash and internal-RAM impact before adding a font; the ESP32-C3 has no PSRAM.
 - Do not commit fonts whose license does not permit redistribution.
 
+| File | Source and use |
+| --- | --- |
+| [`fonts/pager_font_16.c`](fonts/pager_font_16.c) | LVGL 9 generated 16 px Source Han Sans SC subset for the Passport Pager UI body text, mode hints, status, battery, and connected-device strings. It includes printable ASCII, the fixed pager UI symbols in [`fonts/pager_charset.txt`](fonts/pager_charset.txt), and a broad Simplified Chinese name/common-character set from [`fonts/pager_charset_names.txt`](fonts/pager_charset_names.txt) so peer device names and new hints degrade less often. |
+| [`fonts/pager_font_24.c`](fonts/pager_font_24.c) | LVGL 9 generated 24 px Source Han Sans SC subset for Passport Pager title, mode chip, and confirmation headline. It intentionally contains only printable ASCII and fixed pager UI symbols to keep Flash use bounded. |
+| [`fonts/pager_charset.txt`](fonts/pager_charset.txt) | Fixed UI symbol inventory used when generating both pager font sizes. Update this before regenerating fonts after changing displayed text. |
+| [`fonts/pager_charset_names.txt`](fonts/pager_charset_names.txt) | Additional 16 px Simplified Chinese character inventory for dynamic names and hints. It is not linked into the 24 px font. |
+| [`fonts/LICENSE-SourceHanSans.txt`](fonts/LICENSE-SourceHanSans.txt) | License text copied with the Source Han Sans based generated pager fonts. |
+
+Generation command shape, run from the ESP-IDF project after Managed Components
+are available:
+
+```bash
+lv_font_conv --font managed_components/lvgl__lvgl/scripts/built_in_font/SourceHanSansSC-Normal.otf \
+  --size 16 --bpp 4 --format lvgl --no-compress -r 0x20-0x7E \
+  --symbols "$(cat assets/fonts/pager_charset.txt)$(cat assets/fonts/pager_charset_names.txt)" \
+  --lv-include lvgl.h -o assets/fonts/pager_font_16.c
+lv_font_conv --font managed_components/lvgl__lvgl/scripts/built_in_font/SourceHanSansSC-Normal.otf \
+  --size 24 --bpp 4 --format lvgl --no-compress -r 0x20-0x7E \
+  --symbols "$(cat assets/fonts/pager_charset.txt)" \
+  --lv-include lvgl.h -o assets/fonts/pager_font_24.c
+```
+
 ## Images
 
 Store reusable source images and generated display assets in `images/`.
