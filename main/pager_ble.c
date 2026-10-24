@@ -281,13 +281,20 @@ static void send_touch(bool down, uint16_t x, uint16_t y)
     esp_hidd_dev_input_set(s_dev, 0, PAGER_RPT_TOUCH, report, sizeof(report));
 }
 
-static void tap_screen_side(bool right_side)
+static void swipe_page(bool next_page)
 {
-    const uint16_t x = right_side ? 26869 : 5898;  // 82% / 18%
-    const uint16_t y = 18022;                      // 55%
-    send_touch(true, x, y);
-    vTaskDelay(pdMS_TO_TICKS(50));
-    send_touch(false, x, y);
+    const int32_t left_x = 5898;    // 18%
+    const int32_t right_x = 26869;  // 82%
+    const uint16_t y = 18022;       // 55%
+    const int32_t start_x = next_page ? right_x : left_x;
+    const int32_t end_x = next_page ? left_x : right_x;
+
+    for (int step = 0; step <= 5; ++step) {
+        const int32_t x = start_x + ((end_x - start_x) * step) / 5;
+        send_touch(true, (uint16_t)x, y);
+        vTaskDelay(pdMS_TO_TICKS(step == 0 ? 35 : 25));
+    }
+    send_touch(false, (uint16_t)end_x, y);
 }
 
 bool pager_ble_tap(pager_key_t key)
@@ -295,7 +302,7 @@ bool pager_ble_tap(pager_key_t key)
     // 真实主机（Mac、安卓）都会先加密再订阅；没加密时也照发，方便模拟器里不配对的测试主机收键。
     if (s_state == PAGER_BLE_ADVERTISING) return false;
     if (key.report_id == PAGER_RPT_TOUCH) {
-        tap_screen_side(key.code == PAGER_TOUCH_RIGHT_SIDE);
+        swipe_page(key.code == PAGER_TOUCH_NEXT);
         return true;
     }
     send_consumer(key, true);

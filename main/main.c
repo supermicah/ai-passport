@@ -1,13 +1,20 @@
 // Passport Pager：把 AI Passport 变成蓝牙翻页器。
-// UP = 上一页，DOWN = 下一页，功能键单击切换翻页方式，双击进入"忘记配对"确认。
+// 翻页模式:UP/DOWN 触屏向右/向左滑动；音量模式:UP/DOWN 发音量 +/-。
+// 功能键单击切换控制模式，双击进入"忘记配对"确认。
 #include <assert.h>
 #include <inttypes.h>
 #include <string.h>
+#include "bsp_audio.h"
 #include "bsp_battery.h"
 #include "bsp_button.h"
 #include "bsp_display.h"
+#include "bsp_i2c.h"
+#include "bsp_pins.h"
+#include "esp_err.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
+#include "esp_sleep.h"
+#include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "lvgl.h"
@@ -21,6 +28,9 @@ static const char *TAG = "passport_pager";
 #define DEVICE_NAME "Passport Pager"
 #define FORGET_CONFIRM_MS 5000
 #define BATTERY_POLL_MS 30000
+#define BACKLIGHT_BRIGHT_PERCENT 20
+#define BACKLIGHT_BRIGHT_MS 8000
+#define BACKLIGHT_SHUTDOWN_MS (5 * 60 * 1000)
 
 typedef enum { EV_PREV, EV_NEXT, EV_MODE, EV_FORGET_ASK, EV_BLE } ev_kind_t;
 typedef struct {
@@ -36,6 +46,9 @@ static char s_peer[PAGER_PEER_NAME_MAX];  // 已连接设备的名字，空串�
 static pager_mode_t s_pager_mode = PAGER_MODE_CLICK;
 static pager_ble_state_t s_ble = PAGER_BLE_ADVERTISING;
 static TickType_t s_forget_deadline;  // 非 0 表示正在等确认
+static TickType_t s_bright_deadline;
+static TickType_t s_shutdown_deadline;
+static uint8_t s_backlight = UINT8_MAX;
 
 static void on_button(bsp_btn_t button, bsp_btn_ev_t event, void *user)
 {
@@ -74,6 +87,92 @@ static void on_ble_state(pager_ble_state_t state, const char *peer_name)
     (void)xQueueSend(s_events, &ev, 0);
 }
 
+static bool tick_reached(TickType_t now, TickType_t deadline)
+{
+    return (int32_t)(now - deadline) >= 0;
+}
+
+static void set_backlight(uint8_t percent)
+{
+    if (s_backlight == percent) return;
+    bsp_display_backlight(percent);
+    s_backlight = percent;
+}
+
+static void log_deep_sleep_warning(const char *step, esp_err_t err)
+{
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "deep sleep 继续：%s 失败: %s", step, esp_err_to_name(err));
+    }
+}
+
+static void enter_deep_sleep(void)
+{
+    ESP_LOGI(TAG, "Idle timeout: entering deep sleep; press any key to wake");
+
+    int mv = bsp_button_read_mv();
+    if (mv >= 0 && mv < BSP_BTN_MV_RELEASED_MIN) {
+        ESP_LOGW(TAG, "按键被按住(%d mV)，延后 deep sleep", mv);
+        TickType_t now = xTaskGetTickCount();
+        s_shutdown_deadline = now + pdMS_TO_TICKS(1000);
+        return;
+    }
+
+    int level = 0;
+    esp_err_t err = bsp_button_prepare_deep_sleep(&level);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "按键交回失败，重启恢复外设: %s", esp_err_to_name(err));
+        esp_restart();
+    }
+    if (level != 1) {
+        ESP_LOGW(TAG, "入睡前按键脚仍为低电平，可能会立即唤醒");
+    }
+
+    log_deep_sleep_warning("GPIO wake arm",
+                           esp_deep_sleep_enable_gpio_wakeup(
+                               1ULL << BSP_BTN_GPIO, ESP_GPIO_WAKEUP_GPIO_LOW));
+    log_deep_sleep_warning("CW2017 suspend", bsp_battery_sleep());
+    log_deep_sleep_warning("ES8311 suspend", bsp_audio_sleep());
+    log_deep_sleep_warning("I2S pin release", bsp_audio_prepare_deep_sleep());
+    log_deep_sleep_warning("shared I2C pin release", bsp_i2c_prepare_deep_sleep());
+
+    if (!bsp_lvgl_lock(1000)) {
+        ESP_LOGE(TAG, "deep sleep 前无法停止 LVGL 刷屏，重启恢复外设");
+        esp_restart();
+    }
+    log_deep_sleep_warning("ST7789 suspend", bsp_display_prepare_deep_sleep());
+
+    esp_deep_sleep_start();
+    ESP_LOGE(TAG, "esp_deep_sleep_start 意外返回，重启恢复外设");
+    esp_restart();
+}
+
+static void mark_button_activity(void)
+{
+    TickType_t now = xTaskGetTickCount();
+    s_shutdown_deadline = now + pdMS_TO_TICKS(BACKLIGHT_SHUTDOWN_MS);
+}
+
+static void brighten_for_mode_action(void)
+{
+    mark_button_activity();
+    s_bright_deadline = xTaskGetTickCount() + pdMS_TO_TICKS(BACKLIGHT_BRIGHT_MS);
+    set_backlight(BACKLIGHT_BRIGHT_PERCENT);
+}
+
+static void update_backlight_idle(void)
+{
+    TickType_t now = xTaskGetTickCount();
+    if (s_bright_deadline && tick_reached(now, s_bright_deadline)) {
+        s_bright_deadline = 0;
+        set_backlight(0);
+    }
+    if (s_shutdown_deadline && tick_reached(now, s_shutdown_deadline)) {
+        s_shutdown_deadline = 0;
+        enter_deep_sleep();
+    }
+}
+
 // 中文用 tools/gen_fonts.sh 从思源黑体生成的子集：16px 正文，24px 标题和模式。
 LV_FONT_DECLARE(pager_font_16);
 LV_FONT_DECLARE(pager_font_24);
@@ -82,11 +181,13 @@ static lv_font_t s_font, s_font_big;
 static const char *const STATUS_TEXT[] = {"等待配对", "正在连接…", "已连接"};
 static const uint32_t STATUS_COLOR[] = {0xF5B942, 0x7FB8FF, 0x5BD68A};
 #define TXT_TITLE      "蓝牙翻页器"
-#define TXT_FOOTER     "上键 上一页　下键 下一页\n功能键 切换　双击 清除配对"
+#define TXT_FOOTER     "上键 向右/音量+　下键 向左/音量-\n功能键 切换　双击 清除配对"
 #define TXT_FORGET     "忘记配对？"
 #define TXT_FORGET_HINT "功能键：清除所有配对\n上 / 下键：取消"
-#define TXT_NEXT       "下一页 ▶"
-#define TXT_PREV       "◀ 上一页"
+#define TXT_NEXT       "向左 下一页 ▶"
+#define TXT_PREV       "◀ 向右 上一页"
+#define TXT_VOLUME_UP   "音量 +"
+#define TXT_VOLUME_DOWN "音量 -"
 #define TXT_OFFLINE    "未连接，先在蓝牙里配对"
 #define TXT_CLEARED    "配对已清除"
 #define TXT_CONNECTED_TO "已连接到 %s"
@@ -117,6 +218,8 @@ static void check_glyphs(void)
         {TXT_FORGET_HINT, &s_font, 16},
         {TXT_NEXT, &s_font, 16},
         {TXT_PREV, &s_font, 16},
+        {TXT_VOLUME_UP, &s_font, 16},
+        {TXT_VOLUME_DOWN, &s_font, 16},
         {TXT_OFFLINE, &s_font, 16},
         {TXT_CLEARED, &s_font, 16},
         {TXT_CONNECTED_TO, &s_font, 16},
@@ -272,16 +375,21 @@ static void build_ui(void)
     bsp_lvgl_unlock();
 }
 
-static void page(pager_dir_t dir)
+static void send_control(pager_dir_t dir)
 {
     if (s_forget_deadline) {  // 确认界面里 UP/DOWN 是取消
         s_forget_deadline = 0;
         refresh();
         return;
     }
-    const char *text = pager_ble_tap(pager_key_for(s_pager_mode, dir))
-                           ? (dir == PAGER_NEXT ? TXT_NEXT : TXT_PREV)
-                           : TXT_OFFLINE;
+    const char *text = TXT_OFFLINE;
+    if (pager_ble_tap(pager_key_for(s_pager_mode, dir))) {
+        if (s_pager_mode == PAGER_MODE_VOLUME) {
+            text = dir == PAGER_PREV ? TXT_VOLUME_UP : TXT_VOLUME_DOWN;
+        } else {
+            text = dir == PAGER_NEXT ? TXT_NEXT : TXT_PREV;
+        }
+    }
     ESP_LOGI(TAG, "%s (%s)", text, pager_mode_name(s_pager_mode));
     show_last(text);
 }
@@ -289,9 +397,16 @@ static void page(pager_dir_t dir)
 static void handle(const ev_t *ev)
 {
     switch (ev->kind) {
-    case EV_PREV: page(PAGER_PREV); break;
-    case EV_NEXT: page(PAGER_NEXT); break;
+    case EV_PREV:
+        mark_button_activity();
+        send_control(PAGER_PREV);
+        break;
+    case EV_NEXT:
+        mark_button_activity();
+        send_control(PAGER_NEXT);
+        break;
     case EV_MODE:
+        brighten_for_mode_action();
         if (s_forget_deadline) {
             s_forget_deadline = 0;
             pager_ble_forget_all();
@@ -304,6 +419,7 @@ static void handle(const ev_t *ev)
         refresh();
         break;
     case EV_FORGET_ASK:
+        brighten_for_mode_action();
         s_forget_deadline = xTaskGetTickCount() + pdMS_TO_TICKS(FORGET_CONFIRM_MS);
         refresh();
         break;
@@ -343,7 +459,7 @@ void app_main(void)
     fonts_init();
     check_glyphs();
     build_ui();
-    bsp_display_backlight(20);
+    brighten_for_mode_action();
     ESP_ERROR_CHECK(bsp_button_init(on_button, NULL));
     // 板子上没有电量计时（比如模拟器）返回 NOT_FOUND，右上角显示 "--"。
     if (bsp_battery_init() != ESP_OK) ESP_LOGW(TAG, "Battery gauge unavailable");
@@ -370,6 +486,7 @@ void app_main(void)
             s_forget_deadline = 0;
             refresh();
         }
+        update_backlight_idle();
         if ((int32_t)(xTaskGetTickCount() - next_battery) >= 0) {
             next_battery += pdMS_TO_TICKS(BATTERY_POLL_MS);
             poll_battery();

@@ -8,22 +8,22 @@ pager_key_t pager_key_for(pager_mode_t mode, pager_dir_t dir)
 {
     const bool next = dir == PAGER_NEXT;
     if (mode == PAGER_MODE_CLICK) {
-        return (pager_key_t){PAGER_RPT_TOUCH, next ? PAGER_TOUCH_RIGHT_SIDE : PAGER_TOUCH_LEFT_SIDE};
+        return (pager_key_t){PAGER_RPT_TOUCH, next ? PAGER_TOUCH_NEXT : PAGER_TOUCH_PREV};
     }
     return (pager_key_t){PAGER_RPT_CONSUMER, next ? CC_VOLUME_DOWN : CC_VOLUME_UP};
 }
 
 const char *pager_mode_name(pager_mode_t mode)
 {
-    static const char *names[PAGER_MODE_COUNT] = {"左右击", "音量键"};
+    static const char *names[PAGER_MODE_COUNT] = {"翻页", "音量键"};
     return mode < PAGER_MODE_COUNT ? names[mode] : "?";
 }
 
 const char *pager_mode_hint(pager_mode_t mode)
 {
     static const char *hints[PAGER_MODE_COUNT] = {
-        "点击屏幕左 / 右侧\n适合番茄小说",
-        "音量加 / 减\n适合文石阅读和番茄小说",
+        "上键向右\n下键向左",
+        "上键音量+\n下键音量-",
     };
     return mode < PAGER_MODE_COUNT ? hints[mode] : "";
 }
