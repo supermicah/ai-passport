@@ -31,8 +31,8 @@ static const char *TAG = "passport_pager";
 #define BACKLIGHT_BRIGHT_PERCENT 20
 #define BACKLIGHT_BRIGHT_MS 8000
 #define BACKLIGHT_SHUTDOWN_MS (5 * 60 * 1000)
-#define BATTERY_POLL_FAST_MS 5000
-#define BATTERY_FALSE_ZERO_MIN_MV 3300
+#define BATTERY_SCREEN_RETRY_MS 1000
+#define BATTERY_SCREEN_RETRY_COUNT 3
 
 typedef enum { EV_PREV, EV_NEXT, EV_MODE, EV_FORGET_ASK, EV_BLE } ev_kind_t;
 typedef struct {
@@ -50,7 +50,12 @@ static pager_ble_state_t s_ble = PAGER_BLE_ADVERTISING;
 static TickType_t s_forget_deadline;  // 非 0 表示正在等确认
 static TickType_t s_bright_deadline;
 static TickType_t s_shutdown_deadline;
+static TickType_t s_battery_retry_deadline;
+static uint8_t s_battery_retry_left;
 static uint8_t s_backlight = UINT8_MAX;
+static bool s_battery_ready;
+
+static void start_battery_screen_sample(void);
 
 static void on_button(bsp_btn_t button, bsp_btn_ev_t event, void *user)
 {
@@ -160,6 +165,7 @@ static void brighten_for_mode_action(void)
     mark_button_activity();
     s_bright_deadline = xTaskGetTickCount() + pdMS_TO_TICKS(BACKLIGHT_BRIGHT_MS);
     set_backlight(BACKLIGHT_BRIGHT_PERCENT);
+    start_battery_screen_sample();
 }
 
 static void update_backlight_idle(void)
@@ -432,24 +438,55 @@ static void handle(const ev_t *ev)
     }
 }
 
-static bool battery_soc_is_false_zero(int soc, int mv)
+static bool poll_battery(bool defer_zero, bool *zero_deferred)
 {
-    return soc == 0 && mv >= BATTERY_FALSE_ZERO_MIN_MV;
-}
-
-static void poll_battery(void)
-{
+    if (zero_deferred) *zero_deferred = false;
+    if (!s_battery_ready) return false;
     int soc = bsp_battery_soc();
-    int mv = soc == 0 ? bsp_battery_mv() : -1;
-    if (battery_soc_is_false_zero(soc, mv)) {
-        ESP_LOGW(TAG, "Battery ignored transient 0%% at %d mV", mv);
-        return;
+    if (soc == 0 && defer_zero) {
+        if (zero_deferred) *zero_deferred = true;
+        ESP_LOGW(TAG, "Battery returned 0%%; keeping previous display");
+        return false;
     }
-    if (soc == s_battery) return;
+    if (soc == s_battery) return true;
     s_battery = soc;
     ESP_LOGI(TAG, "Battery: %d%%", soc);
     if (soc >= 0) pager_ble_set_battery(soc);
     refresh();
+    return true;
+}
+
+static void start_battery_screen_sample(void)
+{
+    if (!s_battery_ready) return;
+    s_battery_retry_left = BATTERY_SCREEN_RETRY_COUNT;
+    s_battery_retry_deadline = 0;
+
+    bool zero_deferred = false;
+    if (poll_battery(true, &zero_deferred) || !zero_deferred) {
+        s_battery_retry_left = 0;
+        return;
+    }
+    s_battery_retry_deadline = xTaskGetTickCount() + pdMS_TO_TICKS(BATTERY_SCREEN_RETRY_MS);
+}
+
+static void update_battery_retry(void)
+{
+    if (!s_battery_retry_deadline || !tick_reached(xTaskGetTickCount(), s_battery_retry_deadline)) return;
+
+    if (s_battery_retry_left > 0) --s_battery_retry_left;
+    bool zero_deferred = false;
+    if (poll_battery(true, &zero_deferred) || !zero_deferred) {
+        s_battery_retry_left = 0;
+        s_battery_retry_deadline = 0;
+        return;
+    }
+    if (s_battery_retry_left == 0) {
+        ESP_LOGW(TAG, "Battery still 0%% after screen-light retries; waiting for next trigger");
+        s_battery_retry_deadline = 0;
+        return;
+    }
+    s_battery_retry_deadline = xTaskGetTickCount() + pdMS_TO_TICKS(BATTERY_SCREEN_RETRY_MS);
 }
 
 void app_main(void)
@@ -469,15 +506,16 @@ void app_main(void)
     fonts_init();
     check_glyphs();
     build_ui();
-    brighten_for_mode_action();
     ESP_ERROR_CHECK(bsp_button_init(on_button, NULL));
     // 板子上没有电量计时（比如模拟器）返回 NOT_FOUND，右上角显示 "--"。
     if (bsp_battery_init() != ESP_OK) ESP_LOGW(TAG, "Battery gauge unavailable");
+    else s_battery_ready = true;
 #if CONFIG_PAGER_SIM_NO_BLE
     ESP_LOGW(TAG, "Simulator UI build: Bluetooth not started");
 #else
     ESP_ERROR_CHECK(pager_ble_start(DEVICE_NAME, on_ble_state));
 #endif
+    brighten_for_mode_action();
 
     esp_ota_img_states_t ota_state;
     if (esp_ota_get_state_partition(running, &ota_state) == ESP_OK &&
@@ -486,9 +524,7 @@ void app_main(void)
         ESP_LOGI(TAG, "Trial boot confirmed valid");
     }
     ESP_LOGI(TAG, "Ready: mode=%s", pager_mode_name(s_pager_mode));
-    poll_battery();
-    TickType_t next_battery = xTaskGetTickCount() +
-                              pdMS_TO_TICKS(s_battery < 0 ? BATTERY_POLL_FAST_MS : BATTERY_POLL_MS);
+    TickType_t next_battery = xTaskGetTickCount() + pdMS_TO_TICKS(BATTERY_POLL_MS);
 
     while (true) {
         ev_t ev;
@@ -498,10 +534,11 @@ void app_main(void)
             refresh();
         }
         update_backlight_idle();
+        update_battery_retry();
         if ((int32_t)(xTaskGetTickCount() - next_battery) >= 0) {
-            poll_battery();
-            next_battery = xTaskGetTickCount() +
-                           pdMS_TO_TICKS(s_battery < 0 ? BATTERY_POLL_FAST_MS : BATTERY_POLL_MS);
+            bool zero_deferred = false;
+            poll_battery(true, &zero_deferred);
+            next_battery = xTaskGetTickCount() + pdMS_TO_TICKS(BATTERY_POLL_MS);
         }
     }
 }

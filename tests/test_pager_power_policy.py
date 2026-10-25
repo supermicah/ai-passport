@@ -38,17 +38,38 @@ class PagerPowerPolicyTest(unittest.TestCase):
         self.assertIn("mark_button_activity();", helper.group("body"))
         self.assertIn("set_backlight(BACKLIGHT_BRIGHT_PERCENT);", helper.group("body"))
 
-    def test_transient_battery_zero_is_filtered_by_voltage(self) -> None:
-        self.assertIn("#define BATTERY_FALSE_ZERO_MIN_MV 3300", SOURCE)
+    def test_screen_light_triggers_battery_zero_retry(self) -> None:
+        self.assertIn("#define BATTERY_SCREEN_RETRY_MS 1000", SOURCE)
+        self.assertIn("#define BATTERY_SCREEN_RETRY_COUNT 3", SOURCE)
+        self.assertNotIn("BATTERY_POLL_FAST_MS", SOURCE)
+        self.assertNotIn("BATTERY_FALSE_ZERO_MIN_MV", SOURCE)
+
         helper = re.search(
-            r"static bool battery_soc_is_false_zero\(int soc, int mv\)\n\{(?P<body>.*?)\n\}",
+            r"static void brighten_for_mode_action\(void\)\n\{(?P<body>.*?)\n\}",
             SOURCE,
             re.S,
         )
         self.assertIsNotNone(helper)
-        self.assertIn("soc == 0", helper.group("body"))
-        self.assertIn("mv >= BATTERY_FALSE_ZERO_MIN_MV", helper.group("body"))
-        self.assertIn("Battery ignored transient 0%%", SOURCE)
+        self.assertIn("start_battery_screen_sample();", helper.group("body"))
+
+        sampler = re.search(
+            r"static void start_battery_screen_sample\(void\)\n\{(?P<body>.*?)\n\}",
+            SOURCE,
+            re.S,
+        )
+        self.assertIsNotNone(sampler)
+        self.assertIn("s_battery_retry_left = BATTERY_SCREEN_RETRY_COUNT;", sampler.group("body"))
+        self.assertIn("poll_battery(true, &zero_deferred)", sampler.group("body"))
+        self.assertIn("BATTERY_SCREEN_RETRY_MS", sampler.group("body"))
+
+        retry = re.search(
+            r"static void update_battery_retry\(void\)\n\{(?P<body>.*?)\n\}",
+            SOURCE,
+            re.S,
+        )
+        self.assertIsNotNone(retry)
+        self.assertIn("--s_battery_retry_left", retry.group("body"))
+        self.assertIn("Battery still 0%% after screen-light retries", SOURCE)
 
 
 if __name__ == "__main__":
