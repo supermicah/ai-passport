@@ -31,6 +31,8 @@ static const char *TAG = "passport_pager";
 #define BACKLIGHT_BRIGHT_PERCENT 20
 #define BACKLIGHT_BRIGHT_MS 8000
 #define BACKLIGHT_SHUTDOWN_MS (5 * 60 * 1000)
+#define BATTERY_POLL_FAST_MS 5000
+#define BATTERY_FALSE_ZERO_MIN_MV 3300
 
 typedef enum { EV_PREV, EV_NEXT, EV_MODE, EV_FORGET_ASK, EV_BLE } ev_kind_t;
 typedef struct {
@@ -398,11 +400,9 @@ static void handle(const ev_t *ev)
 {
     switch (ev->kind) {
     case EV_PREV:
-        mark_button_activity();
         send_control(PAGER_PREV);
         break;
     case EV_NEXT:
-        mark_button_activity();
         send_control(PAGER_NEXT);
         break;
     case EV_MODE:
@@ -432,9 +432,19 @@ static void handle(const ev_t *ev)
     }
 }
 
+static bool battery_soc_is_false_zero(int soc, int mv)
+{
+    return soc == 0 && mv >= BATTERY_FALSE_ZERO_MIN_MV;
+}
+
 static void poll_battery(void)
 {
     int soc = bsp_battery_soc();
+    int mv = soc == 0 ? bsp_battery_mv() : -1;
+    if (battery_soc_is_false_zero(soc, mv)) {
+        ESP_LOGW(TAG, "Battery ignored transient 0%% at %d mV", mv);
+        return;
+    }
     if (soc == s_battery) return;
     s_battery = soc;
     ESP_LOGI(TAG, "Battery: %d%%", soc);
@@ -477,7 +487,8 @@ void app_main(void)
     }
     ESP_LOGI(TAG, "Ready: mode=%s", pager_mode_name(s_pager_mode));
     poll_battery();
-    TickType_t next_battery = xTaskGetTickCount() + pdMS_TO_TICKS(BATTERY_POLL_MS);
+    TickType_t next_battery = xTaskGetTickCount() +
+                              pdMS_TO_TICKS(s_battery < 0 ? BATTERY_POLL_FAST_MS : BATTERY_POLL_MS);
 
     while (true) {
         ev_t ev;
@@ -488,8 +499,9 @@ void app_main(void)
         }
         update_backlight_idle();
         if ((int32_t)(xTaskGetTickCount() - next_battery) >= 0) {
-            next_battery += pdMS_TO_TICKS(BATTERY_POLL_MS);
             poll_battery();
+            next_battery = xTaskGetTickCount() +
+                           pdMS_TO_TICKS(s_battery < 0 ? BATTERY_POLL_FAST_MS : BATTERY_POLL_MS);
         }
     }
 }
