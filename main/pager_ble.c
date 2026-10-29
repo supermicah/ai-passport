@@ -20,6 +20,10 @@ static const char *TAG = "pager_ble";
 
 #define APPEARANCE_HID      0x03C0
 #define HID_SERVICE_UUID    0x1812
+#define PAGER_CONN_ITVL_MIN 24   // 30 ms, in 1.25 ms units
+#define PAGER_CONN_ITVL_MAX 40   // 50 ms, in 1.25 ms units
+#define PAGER_CONN_LATENCY  0
+#define PAGER_CONN_TIMEOUT  600  // 6 s, in 10 ms units
 
 static const uint8_t report_map[] = {
     // Touch screen, report ID 1: one finger, absolute X/Y in 0..32767.
@@ -110,6 +114,47 @@ static void read_peer_name(uint16_t conn)
     if (rc != 0) ESP_LOGW(TAG, "read peer name rc=%d", rc);
 }
 
+static void log_conn_desc(const char *prefix, uint16_t conn)
+{
+    struct ble_gap_conn_desc desc;
+    int rc = ble_gap_conn_find(conn, &desc);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "%s: conn desc rc=%d", prefix, rc);
+        return;
+    }
+    ESP_LOGI(TAG, "%s: itvl=%u latency=%u supervision=%u",
+             prefix, desc.conn_itvl, desc.conn_latency, desc.supervision_timeout);
+}
+
+static void prefer_stable_conn(uint16_t conn)
+{
+    const struct ble_gap_upd_params params = {
+        .itvl_min = PAGER_CONN_ITVL_MIN,
+        .itvl_max = PAGER_CONN_ITVL_MAX,
+        .latency = PAGER_CONN_LATENCY,
+        .supervision_timeout = PAGER_CONN_TIMEOUT,
+        .min_ce_len = 0,
+        .max_ce_len = 0,
+    };
+    int rc = ble_gap_update_params(conn, &params);
+    if (rc != 0 && rc != BLE_HS_EALREADY) {
+        ESP_LOGW(TAG, "conn param update rc=%d", rc);
+    } else {
+        ESP_LOGI(TAG, "Requested stable conn params: itvl=%u-%u latency=%u supervision=%u",
+                 params.itvl_min, params.itvl_max, params.latency, params.supervision_timeout);
+    }
+}
+
+static void keep_stable_conn_request(struct ble_gap_upd_params *params)
+{
+    if (!params) return;
+    if (params->itvl_min < PAGER_CONN_ITVL_MIN) params->itvl_min = PAGER_CONN_ITVL_MIN;
+    if (params->itvl_min > PAGER_CONN_ITVL_MAX) params->itvl_min = PAGER_CONN_ITVL_MAX;
+    if (params->itvl_max < params->itvl_min) params->itvl_max = params->itvl_min;
+    if (params->itvl_max > PAGER_CONN_ITVL_MAX) params->itvl_max = PAGER_CONN_ITVL_MAX;
+    if (params->supervision_timeout < PAGER_CONN_TIMEOUT) params->supervision_timeout = PAGER_CONN_TIMEOUT;
+}
+
 static void adv_start(void)
 {
     if (ble_gap_adv_active()) return;
@@ -147,6 +192,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         s_conn = event->connect.conn_handle;
         s_peer_name[0] = 0;
         ESP_LOGI(TAG, "Connected; requesting encryption");
+        log_conn_desc("Connected params", s_conn);
         set_state(PAGER_BLE_CONNECTED);
         // HID 主机要求加密链路；已配对的设备会直接用保存的密钥。
         ble_gap_security_initiate(s_conn);
@@ -164,10 +210,26 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         if (event->enc_change.status == 0) {
             ESP_LOGI(TAG, "Encrypted; ready to page");
             set_state(PAGER_BLE_READY);
+            prefer_stable_conn(event->enc_change.conn_handle);
             // 有的主机只在加密后才让读设备名，所以等加密完成再读。
             read_peer_name(event->enc_change.conn_handle);
         } else {
             ESP_LOGW(TAG, "Encryption failed status=%d", event->enc_change.status);
+        }
+        return 0;
+    case BLE_GAP_EVENT_CONN_UPDATE:
+        ESP_LOGI(TAG, "Connection update status=%d", event->conn_update.status);
+        if (event->conn_update.status == 0) log_conn_desc("Updated params", event->conn_update.conn_handle);
+        return 0;
+    case BLE_GAP_EVENT_CONN_UPDATE_REQ:
+    case BLE_GAP_EVENT_L2CAP_UPDATE_REQ:
+        keep_stable_conn_request(event->conn_update_req.self_params);
+        if (event->conn_update_req.self_params) {
+            ESP_LOGI(TAG, "Peer conn update request adjusted: itvl=%u-%u latency=%u supervision=%u",
+                     event->conn_update_req.self_params->itvl_min,
+                     event->conn_update_req.self_params->itvl_max,
+                     event->conn_update_req.self_params->latency,
+                     event->conn_update_req.self_params->supervision_timeout);
         }
         return 0;
     case BLE_GAP_EVENT_REPEAT_PAIRING:

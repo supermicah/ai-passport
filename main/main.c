@@ -176,6 +176,11 @@ static void update_backlight_idle(void)
         set_backlight(0);
     }
     if (s_shutdown_deadline && tick_reached(now, s_shutdown_deadline)) {
+        if (s_ble != PAGER_BLE_ADVERTISING) {
+            ESP_LOGI(TAG, "BLE link active; deferring deep sleep");
+            s_shutdown_deadline = now + pdMS_TO_TICKS(BACKLIGHT_SHUTDOWN_MS);
+            return;
+        }
         s_shutdown_deadline = 0;
         enter_deep_sleep();
     }
@@ -385,6 +390,7 @@ static void build_ui(void)
 
 static void send_control(pager_dir_t dir)
 {
+    mark_button_activity();
     if (s_forget_deadline) {  // 确认界面里 UP/DOWN 是取消
         s_forget_deadline = 0;
         refresh();
